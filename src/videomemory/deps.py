@@ -113,14 +113,10 @@ def install_snippets(*, project_dir: Path | None = None, data_dir: Path | None =
         f"--data-dir {data_dir}"
     )
     return {
-        "claude_code_local": (
+        "claude_code": (
             f"claude mcp add -s user videomemory -- {args}"
         ),
-        "claude_code_remote": (
-            "claude mcp add -s user videomemory "
-            "https://example.com/mcp --transport http"
-        ),
-        "codex_local_json": json.dumps(
+        "codex_json": json.dumps(
             {
                 "mcpServers": {
                     "videomemory": {
@@ -130,17 +126,6 @@ def install_snippets(*, project_dir: Path | None = None, data_dir: Path | None =
                             "videomemory", "mcp", "serve",
                             "--data-dir", str(data_dir),
                         ],
-                    }
-                }
-            },
-            indent=2,
-        ),
-        "codex_remote_json": json.dumps(
-            {
-                "mcpServers": {
-                    "videomemory": {
-                        "url": "https://example.com/mcp",
-                        "transport": "http",
                     }
                 }
             },

@@ -42,15 +42,9 @@ TOOL_DEFS: list[mt.Tool] = [
     mt.Tool(
         name="skip",
         description=(
-            "Answer a question about a single video. **Use this as the default tool for any "
-            "single-video question** — it ingests if needed, auto-detects audio-rich vs "
-            "audio-sparse content, and returns whichever is useful:\n"
-            "  - mode='transcript': a confident transcript match with timestamp, deep link, "
-            "excerpt, and one frame at the hit.\n"
-            "  - mode='visual': N sampled keyframes (no good transcript match — silent, "
-            "music-only, or just mismatched). Look at each frame's URI with your own vision "
-            "to answer.\n"
-            "Always check the `mode` and `note` fields before responding."
+            "Skip to the exact moment in a video where the user's question is answered. "
+            "Ingests if not cached. Returns timestamp, deep link (e.g. youtu.be/X?t=863), "
+            "transcript excerpt, and frame URI."
         ),
         inputSchema={
             "type": "object",
@@ -79,11 +73,12 @@ TOOL_DEFS: list[mt.Tool] = [
     mt.Tool(
         name="frames",
         description=(
-            "**Power tool — prefer `skip` first.** Sample explicit keyframes from a video. "
-            "Use this when you've already used `skip`, gotten a `visual` result, and need "
-            "either more frames or frames at specific timestamps to ground a follow-up. "
-            "Pick exactly one of: count (N evenly-spaced), every (one every X seconds), or "
-            "at (explicit timestamps in seconds). Default count=8, hard cap 16."
+            "Sample N keyframes from a video and return them as fetchable image URIs. "
+            "Use this for VISUAL videos (comedy shorts, sports, silent demos) where the "
+            "audio doesn't describe what's happening — Claude can then look at the frames "
+            "with its own vision. Pick exactly one of: count (N evenly-spaced frames), "
+            "every (a frame every X seconds), or at (explicit timestamps). Default: count=8. "
+            "Hard cap is 16 frames per call to stay within context."
         ),
         inputSchema={
             "type": "object",
@@ -119,8 +114,8 @@ async def _handle(name: str, args: dict) -> dict:
         return s.model_dump(mode="json")
 
     if name == "skip":
-        r = await one_skip(args["url"], args["question"])
-        return r.model_dump(mode="json")
+        h = await one_skip(args["url"], args["question"])
+        return h.model_dump(mode="json") if h else {"hit": None}
 
     if name == "search":
         hits = cross_search(args["query"], top_k=int(args.get("top_k", 5)))

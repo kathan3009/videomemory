@@ -3,6 +3,7 @@
   videomemory setup            # check deps + pre-pull models + print install snippets
   videomemory add <url>        # ingest a URL or path
   videomemory skip <url> "q"   # find the timestamp answering q
+  videomemory frames <url>     # sample N keyframes (for visual videos)
   videomemory search "q"       # cross-video search
   videomemory understand <url> # summary + chapters
   videomemory list             # list library
@@ -10,7 +11,6 @@
   videomemory export <path>    # export library bundle
   videomemory import <path>    # import library bundle (Watch Club)
   videomemory mcp serve        # stdio MCP server
-  videomemory serve            # HTTP server (demo + REST + HTTP MCP)
 """
 
 from __future__ import annotations
@@ -81,12 +81,10 @@ def setup() -> None:
     console.print("Done.\n")
 
     snips = install_snippets()
-    console.print("[bold]Install in Claude Code (local):[/bold]")
-    console.print(snips["claude_code_local"])
-    console.print("\n[bold]Install in Claude Code (remote, hosted):[/bold]")
-    console.print(snips["claude_code_remote"])
-    console.print("\n[bold]Codex config (local):[/bold]")
-    console.print(snips["codex_local_json"])
+    console.print("[bold]Install in Claude Code:[/bold]")
+    console.print(snips["claude_code"])
+    console.print("\n[bold]Codex (or any MCP client) config:[/bold]")
+    console.print(snips["codex_json"])
 
 
 @app.command()
@@ -104,22 +102,20 @@ def skip(
     question: str = typer.Argument(...),
     json_out: bool = typer.Option(False, "--json"),
 ) -> None:
-    """Answer a question about a video. Auto-falls back to visual frames if audio is sparse."""
+    """Find the exact moment in `url` that answers `question`."""
     from videomemory.search import skip as one_skip
 
-    r = asyncio.run(one_skip(url, question))
+    h = asyncio.run(one_skip(url, question))
     if json_out:
-        console.print_json(data=r.model_dump(mode="json")); return
-    title = r.title or r.video_id
-    console.print(f"\n[dim]{title}[/dim]  [{r.mode}]")
-    console.print(f"[dim]{r.note}[/dim]\n")
-    if r.mode == "transcript" and r.timestamp_human and r.deep_link:
-        console.print(f"[bold green]{r.timestamp_human}[/bold green]  {r.deep_link}")
-        console.print(r.transcript_excerpt)
-    else:
-        console.print(f"[yellow]visual mode[/yellow]  {len(r.frames)} frames sampled")
-    for f in r.frames:
-        console.print(f"  • {f.timestamp_human}  {f.deep_link}  · {f.frame_uri}")
+        console.print_json(data=h.model_dump(mode="json") if h else None)
+        return
+    if not h:
+        console.print("[red]no match[/red]"); raise typer.Exit(1)
+    console.print(f"\n[bold green]{h.timestamp_human}[/bold green]  {h.deep_link}")
+    console.print(f"[dim]{h.title or h.video_id}  · score={h.score:.3f}[/dim]\n")
+    console.print(h.transcript_excerpt)
+    if h.frame_uri:
+        console.print(f"\n[dim]frame: {h.frame_uri}[/dim]")
 
 
 @app.command(name="frames")
