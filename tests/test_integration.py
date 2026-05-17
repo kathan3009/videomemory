@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 
 from videomemory.library import list_videos
 from videomemory.search import search, skip
