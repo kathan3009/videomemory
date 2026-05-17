@@ -82,7 +82,12 @@ async def skip(url: str, question: str, *, with_frame: bool = True) -> Hit | Non
 
 
 def search(query: str, *, top_k: int = 5) -> list[Hit]:
-    """Cross-video search. Reads everything in the library."""
+    """Cross-video search. Reads everything in the library.
+
+    Returns hits *without* frame URIs by default — frames are not extracted at
+    search time to keep cross-video queries fast. The agent can call `get_frames`
+    explicitly on a specific hit's video if it needs visual context.
+    """
     rows = iter_all_windows()
     if not rows:
         return []
@@ -105,7 +110,7 @@ def search(query: str, *, top_k: int = 5) -> list[Hit]:
                 deep_link=deep_link(v.source, hit_time),
                 transcript_excerpt=_excerpt_around(w.text),
                 score=score,
-                frame_uri=_frame_uri(w.video_id, hit_time),
+                frame_uri=None,
             )
         )
     return hits

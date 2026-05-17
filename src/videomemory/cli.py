@@ -120,6 +120,29 @@ def skip(
         console.print(f"\n[dim]frame: {h.frame_uri}[/dim]")
 
 
+@app.command(name="frames")
+def cmd_frames(
+    url: str = typer.Argument(...),
+    count: int = typer.Option(8, "--count", "-n", help="N evenly-spaced frames."),
+    every: float | None = typer.Option(None, "--every", help="A frame every X seconds."),
+    at: str | None = typer.Option(None, "--at", help="Explicit timestamps, comma-separated seconds."),
+    json_out: bool = typer.Option(False, "--json"),
+) -> None:
+    """Sample keyframes for visual reasoning (works on silent videos too)."""
+    import asyncio as _asyncio
+
+    from videomemory.frames import get_frames
+
+    at_list = [float(s) for s in at.split(",")] if at else None
+    frames = _asyncio.run(get_frames(url, count=count, every=every, at=at_list))
+    if json_out:
+        console.print_json(data=[f.model_dump(mode="json") for f in frames]); return
+    if not frames:
+        console.print("[yellow]no frames extracted[/yellow]"); return
+    for f in frames:
+        console.print(f"  [green]{f.timestamp_human}[/green]  {f.deep_link}  · {f.frame_uri}")
+
+
 @app.command(name="search")
 def cmd_search(
     query: str = typer.Argument(...),
@@ -223,17 +246,6 @@ def mcp_serve(
     from videomemory.mcp_server import serve_stdio
 
     asyncio.run(serve_stdio())
-
-
-@app.command(name="serve")
-def http_serve(
-    host: str = typer.Option("127.0.0.1"),
-    port: int = typer.Option(8000),
-) -> None:
-    """Start the HTTP server (demo + REST + HTTP MCP at /mcp)."""
-    import uvicorn
-
-    uvicorn.run("videomemory.server:app", host=host, port=port, reload=False, log_level="info")
 
 
 def main() -> None:

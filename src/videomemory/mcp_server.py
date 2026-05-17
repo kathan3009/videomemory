@@ -1,6 +1,6 @@
 """MCP server exposing videomemory over stdio.
 
-5 tools: understand, skip, search, add, list.
+6 tools: understand, skip, search, frames, add, list.
 Frames are served as `videomemory://frames/<video_id>/<file>` resources so
 clients can fetch them on demand rather than receiving base64 blobs.
 """
@@ -15,6 +15,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 
 from videomemory.config import data_dir, frame_dir
+from videomemory.frames import get_frames as multi_frames
 from videomemory.ingest import ingest
 from videomemory.library import list_videos as lib_list_videos
 from videomemory.search import search as cross_search
@@ -70,6 +71,27 @@ TOOL_DEFS: list[mt.Tool] = [
         },
     ),
     mt.Tool(
+        name="frames",
+        description=(
+            "Sample N keyframes from a video and return them as fetchable image URIs. "
+            "Use this for VISUAL videos (comedy shorts, sports, silent demos) where the "
+            "audio doesn't describe what's happening — Claude can then look at the frames "
+            "with its own vision. Pick exactly one of: count (N evenly-spaced frames), "
+            "every (a frame every X seconds), or at (explicit timestamps). Default: count=8. "
+            "Hard cap is 16 frames per call to stay within context."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "url": {"type": "string"},
+                "count": {"type": "integer", "description": "N evenly-spaced frames across the whole video."},
+                "every": {"type": "number", "description": "A frame every X seconds."},
+                "at": {"type": "array", "items": {"type": "number"}, "description": "Explicit timestamps in seconds."},
+            },
+            "required": ["url"],
+        },
+    ),
+    mt.Tool(
         name="add",
         description="Add a video to the library without asking a question (just ingest + index).",
         inputSchema={
@@ -98,6 +120,15 @@ async def _handle(name: str, args: dict) -> dict:
     if name == "search":
         hits = cross_search(args["query"], top_k=int(args.get("top_k", 5)))
         return {"hits": [h.model_dump(mode="json") for h in hits]}
+
+    if name == "frames":
+        frames = await multi_frames(
+            args["url"],
+            count=args.get("count"),
+            every=args.get("every"),
+            at=args.get("at"),
+        )
+        return {"frames": [f.model_dump(mode="json") for f in frames]}
 
     if name == "add":
         v = await ingest(args["url"])

@@ -1,8 +1,15 @@
 {
   "mcpServers": {
     "videomemory": {
-      "url": "https://example.com/mcp",
-      "transport": "http"
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "/absolute/path/to/videomemory",
+        "videomemory",
+        "mcp",
+        "serve"
+      ]
     }
   }
 }

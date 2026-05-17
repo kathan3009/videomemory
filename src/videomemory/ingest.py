@@ -180,8 +180,23 @@ async def _ffmpeg_to_wav(src: Path, dst: Path, sample_rate: int = 16000) -> None
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
     _, err = await proc.communicate()
-    if proc.returncode != 0:
-        raise RuntimeError(f"ffmpeg failed: {err.decode(errors='replace')[:500]}")
+    if proc.returncode == 0:
+        return
+    err_text = err.decode(errors="replace")
+    # Silent video → no audio stream. Generate a tiny silent wav so whisper has
+    # *something* to read (it'll return zero segments, which is correct).
+    if "does not contain any stream" in err_text or "Stream specifier" in err_text:
+        log.info("source has no audio; generating silent placeholder wav")
+        silence = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-f", "lavfi", "-i", f"anullsrc=channel_layout=mono:sample_rate={sample_rate}",
+            "-t", "0.1", str(dst),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        await silence.communicate()
+        if silence.returncode == 0 and dst.exists():
+            return
+    raise RuntimeError(f"ffmpeg failed: {err_text[:500]}")
 
 
 async def resolve_source(source: str) -> Source:
@@ -206,7 +221,11 @@ async def resolve_source(source: str) -> Source:
     wav = vdir / "source.wav"
     if not wav.exists():
         await _ffmpeg_to_wav(p, wav)
-    duration = await _ffprobe_duration(wav)
+    # Probe the original file — for silent videos `wav` is a 0.1 s placeholder
+    # and would give us the wrong duration.
+    duration = await _ffprobe_duration(p)
+    if duration <= 0:
+        duration = await _ffprobe_duration(wav)
     title = p.stem
     (vdir / "title.txt").write_text(title)
     (vdir / "original_path.txt").write_text(str(p))

@@ -42,6 +42,11 @@ def science_path(fixtures_built) -> Path:
 
 
 @pytest.fixture(scope="session")
+def silent_path(fixtures_built) -> Path:
+    return fixtures_built["silent"]
+
+
+@pytest.fixture(scope="session")
 def tutorial_ingested(tutorial_path):
     from videomemory.ingest import ingest
 

@@ -2,184 +2,200 @@
 
 # 🎬 videomemory
 
-### the video understanding layer for **Claude Code** & **Codex**
+**give Claude Code & Codex eyes for video.**
+local. private. one MCP server, six tools, zero API keys.
 
-paste any YouTube link → ask anything about it. **MCP-native.** Works in any agent.
-
-[![MIT](https://img.shields.io/badge/license-MIT-black.svg)](LICENSE)
-[![Python 3.12](https://img.shields.io/badge/python-3.12-3776ab.svg)](https://www.python.org/)
-[![Demo](https://img.shields.io/badge/demo-example.com-34d399.svg)](https://example.com)
-[![Stars](https://img.shields.io/github/stars/kathan3009/videomemory?style=social)](https://github.com/kathan3009/videomemory)
+[![MIT](https://img.shields.io/badge/license-MIT-black?style=flat-square)](LICENSE)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-3776ab?style=flat-square)](https://www.python.org/)
+[![Tests](https://img.shields.io/badge/tests-27%20passing-34d399?style=flat-square)](tests/)
+[![No cloud](https://img.shields.io/badge/cloud-none-ff6b6b?style=flat-square)]()
+[![Stars](https://img.shields.io/github/stars/kathan3009/videomemory?style=flat-square&color=fbbf24)](https://github.com/kathan3009/videomemory)
 
 </div>
 
----
-
 ```
-you  ▸  "ingest https://youtu.be/BM70fDqUo3c. where do they configure tailwind?"
+you  ▸  use videomemory to skip to the part of <youtube_url> where they explain X
 
-claude ▸  Calling videomemory.skip()...
-       ▸  14:23  →  https://youtu.be/BM70fDqUo3c?t=863
+claude ▸  14:23  →  https://youtu.be/X?t=863
        ▸  "First, we install Tailwind by running npm install tailwindcss..."
+       ▸  [shows you the frame at 14:23]
 ```
 
-That's the whole pitch. Three things make it stick:
-
-| | feature | what it does |
-|---|---|---|
-| ⚡ | **Skip**            | Paste a URL + a question. Get the timestamp + deep link + frame + transcript excerpt. Done. |
-| 📚 | **Watch History**   | Import your Google Takeout YouTube history. Your agent can now search **everything you've ever watched.** |
-| 👯 | **Watch Club**      | Export your library as a single file. Hand it to a friend. They `import` it. Now their agent knows what you know. |
+that's it. you don't open the video. claude does.
 
 ---
 
-## install in 30 seconds
-
-### option 1 — hosted (zero setup)
-
-Use the public instance. No Python, no models to download. Same MCP surface.
+## install (60 seconds)
 
 ```bash
-claude mcp add -s user videomemory \
-  https://example.com/mcp \
-  --transport http
+git clone https://github.com/kathan3009/videomemory
+cd videomemory
+./setup.sh
 ```
 
-For **Codex** (or any MCP client), add to your config:
+that's the whole thing. it'll install `ffmpeg`+`yt-dlp` if missing, fetch the ML models (~600 MB), and wire the MCP server into Claude Code automatically.
+
+prefer to let Claude do it? clone the repo, open a Claude Code session in the directory, and say:
+
+> *set this up*
+
+it'll find the skill in `.claude/skills/` and run setup itself.
+
+---
+
+## what you get
+
+once installed, every Claude Code & Codex session gets these tools:
+
+| | tool | what it does |
+|---|---|---|
+| ⚡ | **`skip`**       | paste url + question. get timestamp + deep link + frame + transcript snippet. |
+| 🖼️ | **`frames`**     | sample N keyframes from any video. for visual stuff with no audio (comedy shorts, sports, silent demos). |
+| 🎧 | **`understand`** | watch the video for you. returns bullets + chapter timestamps + transcript. |
+| 📚 | **`search`**     | search across **every** video you've ever added. cross-video, semantic. |
+| ➕ | **`add`** / **`list`** | library management. |
+
+frames come back as `videomemory://...` URIs that Claude fetches with native vision. no base64 blobs in your context window.
+
+---
+
+## three things that make it interesting
+
+### ⚡ skip the bloat
+
+```
+"skip to where they explain JWT in <2-hour tutorial>"
+                            ↓
+                       45:12 → click
+```
+
+every dev's most-googled phrase: *"just give me the answer."* now Claude can.
+
+### 📚 your YouTube history is searchable
+
+import Google Takeout once → every video you've ever watched is queryable forever.
+
+```bash
+videomemory history ~/Downloads/Takeout/YouTube*/history/watch-history.json --limit 200
+```
+
+then ask Claude: *"which video did I watch about Postgres index tuning?"*
+
+### 👯 watch club
+
+your library is one SQLite file (~MBs even for hundreds of videos — just transcripts + embeddings, no original video). hand it to a friend, they `videomemory import` it, and now their Claude knows what you know.
+
+```bash
+videomemory export my-library.sqlite     # → 4.2 MB
+# (send to friend)
+videomemory import my-library.sqlite     # ← merges into theirs
+```
+
+no servers. no accounts. just a file.
+
+---
+
+## how it actually works
+
+```
+URL  →  yt-dlp + ffmpeg  →  faster-whisper  →  30s text windows
+                                                      ↓
+                              bge-small-en-v1.5 embeddings
+                                                      ↓
+                                                 SQLite library
+                                                      ↓
+                       cosine retrieval  +  on-demand ffmpeg keyframes
+                                                      ↓
+                                      6 MCP tools  (stdio transport)
+                                                      ↓
+                               Claude Code  ·  Codex  ·  any MCP client
+```
+
+**deliberately minimal.** no Qdrant, no CLIP, no OCR, no object detection, no scene graphs, no LLM-call summarization, no cloud anything. just transcript + embeddings + cosine + ffmpeg + the agent's own vision.
+
+| | dep | size |
+|---|---|---:|
+| 🔊 | faster-whisper (small) | ~470 MB |
+| 🧠 | bge-small-en-v1.5      | ~120 MB |
+| 🎬 | ffmpeg + yt-dlp        | tiny |
+| 🗄️ | sqlite                | – |
+
+after first run: **fully offline.** no API keys, ever.
+
+---
+
+## you can also use it from the terminal
+
+```bash
+videomemory skip https://youtu.be/X "where do they configure Tailwind?"
+videomemory frames https://youtu.be/X --count 8
+videomemory understand https://youtu.be/X
+videomemory search "Postgres index tuning"
+videomemory list
+videomemory history watch-history.json
+videomemory export my-library.sqlite
+videomemory import friends-library.sqlite
+```
+
+---
+
+## codex / other MCP clients
+
+`setup.sh` auto-registers with Claude Code. for everyone else, paste this into your client's MCP config:
 
 ```json
 {
   "mcpServers": {
     "videomemory": {
-      "url": "https://example.com/mcp",
-      "transport": "http"
+      "command": "uv",
+      "args": ["run", "--project", "/absolute/path/to/videomemory", "videomemory", "mcp", "serve"]
     }
   }
 }
 ```
 
-That's it. Restart your agent and ask it to *"skip to the part of this video where..."*.
-
-### option 2 — local (private, no rate limits)
-
-```bash
-git clone https://github.com/kathan3009/videomemory.git
-cd videomemory
-uv run videomemory setup        # checks ffmpeg/yt-dlp, pre-pulls models, prints install line
-```
-
-`setup` ends by printing the exact `claude mcp add` line for your machine. Paste it. Done.
+then restart and ask away.
 
 ---
 
-## the 5 MCP tools
+## stuff under the hood, for the curious
 
-| tool | what it does |
-|---|---|
-| `understand(url)` | Watch a video. Returns title + duration + 4–8 bullet takeaways + chapter timestamps + transcript. |
-| `skip(url, q)`    | Find the exact moment that answers `q`. Returns timestamp, deep link, frame, excerpt. |
-| `search(query)`   | Search across **every video in your library**. Cross-video retrieval. |
-| `add(url)`        | Ingest a video into your library without asking a question. |
-| `list()`          | Show what's in your library. |
+```
+src/videomemory/
+├── ingest.py            # yt-dlp → ffmpeg → faster-whisper → 30s windows
+├── search.py            # skip() + search() via cosine
+├── frames.py            # extract one or many keyframes
+├── understand.py        # bullets + chapters (LLM if key present, else extractive)
+├── library.py           # SQLite schema + CRUD + bundle export/import
+├── mcp_server.py        # stdio MCP, 6 tools
+├── youtube_history.py   # Google Takeout parser
+├── deps.py              # `videomemory setup` wizard
+├── embed.py             # bge-small wrapper
+├── types.py             # Pydantic schemas
+├── cli.py               # typer CLI
+└── config.py            # env knobs
+```
 
-Frames are returned as `videomemory://frames/<video_id>/<file>` resource URIs so the agent only fetches them on demand — no context-blowing base64 blobs.
+≈1k lines. read it in 20 minutes.
 
 ---
 
-## use it from the terminal too
+## v1.1 candidates (not yet in)
 
-```bash
-# Skip to the answer in any video
-videomemory skip https://youtu.be/BM70fDqUo3c "what is this about?"
+curious what you'd want most:
 
-# Search across everything you've watched
-videomemory search "Postgres index tuning"
+- 🎤 podcast RSS support
+- 🌐 Loom / Twitch VOD / Vimeo
+- 🧭 Chrome extension that auto-ingests as you watch
+- 🔁 livestream / long-video segmented re-indexing
+- 🎬 visual scene search (compute CLIP embeddings on frames)
 
-# Import your YouTube history
-videomemory history ~/Downloads/Takeout/YouTube*/history/watch-history.json --limit 200
-
-# Share your library with a friend (Watch Club)
-videomemory export my-library.sqlite
-# they run:
-videomemory import my-library.sqlite
-```
-
----
-
-## how it works
-
-```
-URL  ──▸  yt-dlp ──▸  ffmpeg ──▸  faster-whisper ──▸  30s windows
-                                                          │
-                                                          ▼
-                                        bge-small-en-v1.5 embeddings
-                                                          │
-                                                          ▼
-                                                   SQLite library
-                                                          │
-                                                          ▼
-                          ┌───────────────────┬───────────┴──────────┐
-                          ▼                   ▼                      ▼
-                       skip()             search()              understand()
-                          │                   │                      │
-                          └──── cosine over cached vectors ──────────┘
-                                              │
-                                              ▼
-                                          MCP tools
-                                              │
-                            ┌─────────────────┼──────────────────┐
-                            ▼                 ▼                  ▼
-                       Claude Code         Codex            any MCP client
-```
-
-**Light by design.** No Qdrant. No CLIP. No OCR. No frontend. No object detection. No memory graph. Just transcription + a single embedding model + cosine + SQLite. The smart layer is the agent — we just give it eyes and a library.
-
-| | dep | size | why |
-|---|---|---:|---|
-| 🔊 | faster-whisper (small) | ~470 MB | transcription |
-| 🧠 | bge-small-en-v1.5 | ~120 MB | text embeddings |
-| 🎬 | ffmpeg + yt-dlp | tiny | source + frames |
-| 🗄️ | sqlite | – | library + vectors |
-
-Pre-pulled in one command (`videomemory setup`). Runs **fully offline** after first install.
-
----
-
-## what's *not* in v1 (yet)
-
-Saved for v1.1 — feedback welcome.
-
-- OCR queries on slides / screen text
-- Visual search ("find the frame with the whiteboard")
-- Cross-video temporal reasoning
-- Chrome extension auto-ingest while you browse
-- Loom / Twitch VOD / TikTok / podcast-RSS sources
-- Long videos > 1 hour (cap is configurable but tested up to 1 h)
-
----
-
-## development
-
-```bash
-uv sync --extra dev
-uv run pytest -q                 # 28 tests, ~40s
-uv run ruff check .
-```
-
-To deploy to your own hosted endpoint:
-
-```bash
-flyctl launch --copy-config --no-deploy
-flyctl deploy
-flyctl certs add example.com
-```
-
-See [`docs/deploy-prod.md`](docs/deploy-prod.md).
+open an issue with what you'd actually use.
 
 ---
 
 ## license
 
-MIT. Built with [faster-whisper](https://github.com/SYSTRAN/faster-whisper), [bge embeddings](https://huggingface.co/BAAI/bge-small-en-v1.5), [yt-dlp](https://github.com/yt-dlp/yt-dlp), [MCP](https://modelcontextprotocol.io/).
+MIT. built on [faster-whisper](https://github.com/SYSTRAN/faster-whisper) · [bge embeddings](https://huggingface.co/BAAI/bge-small-en-v1.5) · [yt-dlp](https://github.com/yt-dlp/yt-dlp) · [MCP](https://modelcontextprotocol.io/) · [Anthropic Claude Code](https://claude.ai/code) · [OpenAI Codex](https://platform.openai.com/codex).
 
-If this is useful, drop a ⭐ — that's the only "thanks" the project needs.
+if this is useful, drop a ⭐ — that's the only thanks this project needs.

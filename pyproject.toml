@@ -38,9 +38,6 @@ dependencies = [
     "torch>=2.3",
     # MCP
     "mcp>=1.0",
-    # HTTP surface (hosted demo + remote MCP)
-    "fastapi>=0.111",
-    "uvicorn[standard]>=0.30",
 ]
 
 [project.optional-dependencies]

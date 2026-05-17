@@ -1,10 +1,6 @@
 {
   "mcpServers": {
-    "videomemory_hosted": {
-      "url": "https://example.com/mcp",
-      "transport": "http"
-    },
-    "videomemory_local": {
+    "videomemory": {
       "command": "uv",
       "args": [
         "run",

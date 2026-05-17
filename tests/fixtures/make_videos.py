@@ -193,12 +193,58 @@ def build_science() -> Path:
     return out
 
 
+def build_silent() -> Path:
+    """A 30s SILENT video with 3 distinctly-coloured visual scenes (no narration).
+
+    Used to verify that `frames(...)` still works when transcript-based skip()
+    would fall flat (mimics a visual-comedy YouTube short like 'How Animals Eat').
+    """
+    out = DATA / "silent.mp4"
+    if out.exists():
+        return out
+    parts_dir = DATA / "_silent_parts"
+    parts_dir.mkdir(exist_ok=True)
+    colors = [(180, 60, 60), (60, 180, 60), (60, 60, 180)]
+    labels = ["RED PANEL", "GREEN PANEL", "BLUE PANEL"]
+    parts: list[Path] = []
+    for i, (color, label) in enumerate(zip(colors, labels, strict=True)):
+        png = parts_dir / f"p{i}.png"
+        _slide_png(label, color, png)
+        mp4 = parts_dir / f"p{i}.mp4"
+        _run([
+            _ffmpeg(), "-y", "-hide_banner", "-loglevel", "error",
+            "-loop", "1", "-t", "10",
+            "-i", str(png),
+            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
+            "-pix_fmt", "yuv420p",
+            "-vf", "scale=720:404",
+            str(mp4),
+        ])
+        parts.append(mp4)
+    import tempfile
+
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        for p in parts:
+            f.write(f"file '{p.resolve()}'\n")
+        listfile = f.name
+    try:
+        _run([
+            _ffmpeg(), "-y", "-hide_banner", "-loglevel", "error",
+            "-f", "concat", "-safe", "0", "-i", listfile,
+            "-c", "copy", str(out),
+        ])
+    finally:
+        Path(listfile).unlink(missing_ok=True)
+    return out
+
+
 def build_all() -> dict[str, Path]:
     if not has_tts():
         raise RuntimeError("no TTS tool available — install `espeak-ng` on Linux")
     return {
         "tutorial": build_tutorial(),
         "science": build_science(),
+        "silent": build_silent(),
     }
 
 

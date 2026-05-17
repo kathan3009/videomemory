@@ -42,6 +42,16 @@ class Hit(BaseModel):
     frame_uri: str | None = None  # videomemory://frames/<video_id>/<ts>.jpg
 
 
+class Frame(BaseModel):
+    """A standalone keyframe (not tied to a transcript hit)."""
+
+    video_id: str
+    timestamp_seconds: float
+    timestamp_human: str
+    deep_link: str
+    frame_uri: str
+
+
 class Summary(BaseModel):
     """Used by `understand()`."""
 
