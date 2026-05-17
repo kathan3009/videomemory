@@ -1,65 +1,55 @@
-"""Shared fixtures for the integration tests.
-
-We build synthetic videos once at the start of the test session and share an
-ingest cache across tests so we don't re-run the heavy CLIP/whisper pipeline
-between test functions.
-"""
+"""Shared fixtures: build TTS narrated mp4s once, ingest once, share across tests."""
 
 from __future__ import annotations
 
+import asyncio
+import os
 import sys
 from pathlib import Path
 
 import pytest
 
-# Make sure src/ layout and the tests/ package root are importable.
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))
 
-from tests.fixtures import make_videos  # noqa: E402
-from videomemory.pipeline.runner import run_ingest  # noqa: E402
+
+@pytest.fixture(scope="session", autouse=True)
+def _isolated_data_dir(tmp_path_factory):
+    """Every test session gets its own data dir so we don't clobber user libraries."""
+    d = tmp_path_factory.mktemp("vm_data")
+    os.environ["VIDEOMEMORY_DATA_DIR"] = str(d)
+    yield d
 
 
 @pytest.fixture(scope="session")
-def fixtures_dir() -> Path:
-    paths = make_videos.build_all()
-    return paths["tech_talk"].parent
+def fixtures_built():
+    from tests.fixtures.make_videos import build_all, has_tts
+
+    if not has_tts():
+        pytest.skip("no TTS available — install `say` (macOS) or `espeak-ng` (Linux)")
+    return build_all()
 
 
 @pytest.fixture(scope="session")
-def tech_talk_path(fixtures_dir: Path) -> Path:
-    return fixtures_dir / "tech_talk.mp4"
+def tutorial_path(fixtures_built) -> Path:
+    return fixtures_built["tutorial"]
 
 
 @pytest.fixture(scope="session")
-def temporal_path(fixtures_dir: Path) -> Path:
-    return fixtures_dir / "temporal.mp4"
+def science_path(fixtures_built) -> Path:
+    return fixtures_built["science"]
 
 
 @pytest.fixture(scope="session")
-def whiteboard_path(fixtures_dir: Path) -> Path:
-    return fixtures_dir / "whiteboard.mp4"
+def tutorial_ingested(tutorial_path):
+    from videomemory.ingest import ingest
+
+    return asyncio.run(ingest(str(tutorial_path)))
 
 
 @pytest.fixture(scope="session")
-def session_data_dir(tmp_path_factory) -> Path:
-    return tmp_path_factory.mktemp("vm_data")
+def science_ingested(science_path):
+    from videomemory.ingest import ingest
 
-
-@pytest.fixture(scope="session")
-async def tech_talk_ingest(session_data_dir: Path, tech_talk_path: Path):
-    job = await run_ingest(str(tech_talk_path), data_dir=session_data_dir)
-    return job
-
-
-@pytest.fixture(scope="session")
-async def temporal_ingest(session_data_dir: Path, temporal_path: Path):
-    job = await run_ingest(str(temporal_path), data_dir=session_data_dir)
-    return job
-
-
-@pytest.fixture(scope="session")
-async def whiteboard_ingest(session_data_dir: Path, whiteboard_path: Path):
-    job = await run_ingest(str(whiteboard_path), data_dir=session_data_dir)
-    return job
+    return asyncio.run(ingest(str(science_path)))

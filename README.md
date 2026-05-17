@@ -1,100 +1,185 @@
-# VideoMemory
+<div align="center">
 
-> A **video memory operating system** for AI agents. Turns videos into semantic temporal memory that agents query through MCP — no more dumping frames into prompts.
+# 🎬 videomemory
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
+### the video understanding layer for **Claude Code** & **Codex**
 
-VideoMemory ingests a video once, builds a **scene graph + event log + temporal edges + multimodal embeddings**, indexes everything in a vector store, and exposes it to LLMs through the **Model Context Protocol (MCP)**. The agent retrieves only the chunks and frames it actually needs — temporal queries like *"what happened after the OAuth discussion?"* resolve to a small set of semantic chunks plus 1–8 keyframes, never the whole video.
+paste any YouTube link → ask anything about it. **MCP-native.** Works in any agent.
 
-This is **not** a transcript wrapper, a captioning tool, or another RAG demo. It's an infrastructure layer for agents that need to reason over video.
+[![MIT](https://img.shields.io/badge/license-MIT-black.svg)](LICENSE)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-3776ab.svg)](https://www.python.org/)
+[![Demo](https://img.shields.io/badge/demo-example.com-34d399.svg)](https://example.com)
+[![Stars](https://img.shields.io/github/stars/kathan3009/videomemory?style=social)](https://github.com/kathan3009/videomemory)
 
-## What you can do
+</div>
 
-- `videomemory ingest sample.mp4` — full pipeline (scenes → audio → vision → memory → index)
-- `videomemory ingest https://youtu.be/...` — same, with `yt-dlp`
-- `videomemory ask <video_id> "what happened after the argument started?"` — temporal query
-- `videomemory frames search <video_id> --query whiteboard` — selective frame recall
-- `videomemory mcp serve` — expose 7 tools over stdio to Claude Desktop / Cursor / Windsurf / VSCode / any MCP client
-- `docker compose up` — full stack (Qdrant + API + frontend + MCP)
+---
 
-## Quickstart
+```
+you  ▸  "ingest https://youtu.be/BM70fDqUo3c. where do they configure tailwind?"
+
+claude ▸  Calling videomemory.skip()...
+       ▸  14:23  →  https://youtu.be/BM70fDqUo3c?t=863
+       ▸  "First, we install Tailwind by running npm install tailwindcss..."
+```
+
+That's the whole pitch. Three things make it stick:
+
+| | feature | what it does |
+|---|---|---|
+| ⚡ | **Skip**            | Paste a URL + a question. Get the timestamp + deep link + frame + transcript excerpt. Done. |
+| 📚 | **Watch History**   | Import your Google Takeout YouTube history. Your agent can now search **everything you've ever watched.** |
+| 👯 | **Watch Club**      | Export your library as a single file. Hand it to a friend. They `import` it. Now their agent knows what you know. |
+
+---
+
+## install in 30 seconds
+
+### option 1 — hosted (zero setup)
+
+Use the public instance. No Python, no models to download. Same MCP surface.
+
+```bash
+claude mcp add -s user videomemory \
+  https://example.com/mcp \
+  --transport http
+```
+
+For **Codex** (or any MCP client), add to your config:
+
+```json
+{
+  "mcpServers": {
+    "videomemory": {
+      "url": "https://example.com/mcp",
+      "transport": "http"
+    }
+  }
+}
+```
+
+That's it. Restart your agent and ask it to *"skip to the part of this video where..."*.
+
+### option 2 — local (private, no rate limits)
 
 ```bash
 git clone https://github.com/kathan3009/videomemory.git
 cd videomemory
-uv sync --extra ml --extra dev
-uv run python scripts/download_models.py
-uv run videomemory ingest tests/fixtures/data/tech_talk.mp4
-uv run videomemory ask <video_id> "When was Kubernetes discussed?"
+uv run videomemory setup        # checks ffmpeg/yt-dlp, pre-pulls models, prints install line
 ```
 
-Connect Claude Desktop by adding the snippet in `examples/claude_desktop_config.json` to your Claude Desktop config — then ask Claude about your video directly.
+`setup` ends by printing the exact `claude mcp add` line for your machine. Paste it. Done.
 
-## Architecture
+---
 
-```
-video → ingest → decompose → audio + vision → temporal memory
-                                                    ↓
-                              semantic chunks ← scene graph
-                                    ↓
-                              bge-small embeddings → Qdrant
-                                    ↓
-                              retrieval router (temporal / OCR / visual / semantic / fuse)
-                                    ↓
-                              MCP server  →  AI agent
-```
+## the 5 MCP tools
 
-See [docs/architecture.md](docs/architecture.md) for the full design.
-
-## Light, MPS-friendly model profile
-
-VideoMemory runs **offline** on Apple Silicon (M-series) and modest CPUs:
-
-| Component | Model | Notes |
-|---|---|---|
-| Transcription | faster-whisper `small` | CTranslate2, CPU + MPS |
-| Vision tags / image embeddings | CLIP ViT-B/32 (open-clip) | MPS or CPU |
-| OCR | rapidocr-onnxruntime | ONNX, ARM-clean |
-| Detection (optional) | YOLOv8n | Skippable |
-| Text embeddings | bge-small-en-v1.5 | ~100 MB |
-| Vector store | Qdrant | Local or Docker |
-| Captions | object + OCR + scene tag template (default) or local Ollama VLM | No cloud required |
-| Diarization (optional) | pyannote-audio | Requires HF token; off by default |
-
-Heavier model swaps are pluggable via config; see [docs/models.md](docs/models.md).
-
-## MCP tools
-
-| Tool | Purpose |
+| tool | what it does |
 |---|---|
-| `ingest_video` | Ingest a path or URL, get a job ID |
-| `list_videos` | Inventory of ingested videos |
-| `query_video` | One-shot Q&A with chunks + selective frames |
-| `get_timeline` | Scene / chunk / event timeline |
-| `get_frames` | Up to N relevant frames for a query |
-| `semantic_search` | Multimodal retrieval (transcript / OCR / visual / fused) |
-| `get_transcript` | Filtered transcript by speaker / time |
+| `understand(url)` | Watch a video. Returns title + duration + 4–8 bullet takeaways + chapter timestamps + transcript. |
+| `skip(url, q)`    | Find the exact moment that answers `q`. Returns timestamp, deep link, frame, excerpt. |
+| `search(query)`   | Search across **every video in your library**. Cross-video retrieval. |
+| `add(url)`        | Ingest a video into your library without asking a question. |
+| `list()`          | Show what's in your library. |
 
-Token-budgeted responses. Frames are returned as MCP **resource URIs** (`videomemory://...`), not base64 blobs — Claude fetches on demand.
+Frames are returned as `videomemory://frames/<video_id>/<file>` resource URIs so the agent only fetches them on demand — no context-blowing base64 blobs.
 
-## Design choices (deviations from a naive build)
+---
 
-- `uv` for env + lock (10–100× faster than pip).
-- Qdrant only in v1; `VectorStore` interface keeps LanceDB pluggable.
-- `rapidocr-onnxruntime` instead of PaddleOCR (Apple Silicon stability).
-- CLIP + templated captions instead of heavyweight VLMs by default.
-- bge-small instead of bge-large (90% of accuracy for a fraction of footprint).
-- pyannote diarization is opt-in.
-- Stdio MCP transport first (what every real client uses today).
-- Async + on-disk stage cache for resumability; no Celery/Airflow needed.
+## use it from the terminal too
 
-See the deviations table in the architecture doc for the full reasoning.
+```bash
+# Skip to the answer in any video
+videomemory skip https://youtu.be/BM70fDqUo3c "what is this about?"
 
-## Status
+# Search across everything you've watched
+videomemory search "Postgres index tuning"
 
-Alpha. The 15 acceptance tests in `tests/integration/` cover ingestion, temporal retrieval, frame recall, OCR queries, multimodal fusion, MCP tool surface, long-video scaling, and resumability. See [`docs/architecture.md`](docs/architecture.md) and [`docs/mcp.md`](docs/mcp.md) for details.
+# Import your YouTube history
+videomemory history ~/Downloads/Takeout/YouTube*/history/watch-history.json --limit 200
 
-## License
+# Share your library with a friend (Watch Club)
+videomemory export my-library.sqlite
+# they run:
+videomemory import my-library.sqlite
+```
 
-MIT — see [LICENSE](LICENSE).
+---
+
+## how it works
+
+```
+URL  ──▸  yt-dlp ──▸  ffmpeg ──▸  faster-whisper ──▸  30s windows
+                                                          │
+                                                          ▼
+                                        bge-small-en-v1.5 embeddings
+                                                          │
+                                                          ▼
+                                                   SQLite library
+                                                          │
+                                                          ▼
+                          ┌───────────────────┬───────────┴──────────┐
+                          ▼                   ▼                      ▼
+                       skip()             search()              understand()
+                          │                   │                      │
+                          └──── cosine over cached vectors ──────────┘
+                                              │
+                                              ▼
+                                          MCP tools
+                                              │
+                            ┌─────────────────┼──────────────────┐
+                            ▼                 ▼                  ▼
+                       Claude Code         Codex            any MCP client
+```
+
+**Light by design.** No Qdrant. No CLIP. No OCR. No frontend. No object detection. No memory graph. Just transcription + a single embedding model + cosine + SQLite. The smart layer is the agent — we just give it eyes and a library.
+
+| | dep | size | why |
+|---|---|---:|---|
+| 🔊 | faster-whisper (small) | ~470 MB | transcription |
+| 🧠 | bge-small-en-v1.5 | ~120 MB | text embeddings |
+| 🎬 | ffmpeg + yt-dlp | tiny | source + frames |
+| 🗄️ | sqlite | – | library + vectors |
+
+Pre-pulled in one command (`videomemory setup`). Runs **fully offline** after first install.
+
+---
+
+## what's *not* in v1 (yet)
+
+Saved for v1.1 — feedback welcome.
+
+- OCR queries on slides / screen text
+- Visual search ("find the frame with the whiteboard")
+- Cross-video temporal reasoning
+- Chrome extension auto-ingest while you browse
+- Loom / Twitch VOD / TikTok / podcast-RSS sources
+- Long videos > 1 hour (cap is configurable but tested up to 1 h)
+
+---
+
+## development
+
+```bash
+uv sync --extra dev
+uv run pytest -q                 # 28 tests, ~40s
+uv run ruff check .
+```
+
+To deploy to your own hosted endpoint:
+
+```bash
+flyctl launch --copy-config --no-deploy
+flyctl deploy
+flyctl certs add example.com
+```
+
+See [`docs/deploy-prod.md`](docs/deploy-prod.md).
+
+---
+
+## license
+
+MIT. Built with [faster-whisper](https://github.com/SYSTRAN/faster-whisper), [bge embeddings](https://huggingface.co/BAAI/bge-small-en-v1.5), [yt-dlp](https://github.com/yt-dlp/yt-dlp), [MCP](https://modelcontextprotocol.io/).
+
+If this is useful, drop a ⭐ — that's the only "thanks" the project needs.

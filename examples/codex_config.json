@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "videomemory": {
+      "url": "https://example.com/mcp",
+      "transport": "http"
+    }
+  }
+}

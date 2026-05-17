@@ -18,62 +18,36 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v3
+      - uses: astral-sh/setup-uv@v3
         with:
           version: "0.11.11"
           enable-cache: true
 
-      - name: Install ffmpeg (Linux)
+      - name: Install ffmpeg + TTS (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg espeak-ng yt-dlp
 
-      - name: Install ffmpeg (macOS)
+      - name: Install ffmpeg + yt-dlp (macOS, TTS pre-installed)
         if: runner.os == 'macOS'
-        run: brew install ffmpeg
+        run: brew install ffmpeg yt-dlp
 
       - name: Sync deps
-        run: uv sync --extra ml --extra dev
-
-      - name: Build test fixtures
-        run: uv run python tests/fixtures/make_videos.py
+        run: uv sync --extra dev
 
       - name: Lint
         run: uv run ruff check .
 
-      - name: Run tests (offline)
-        run: uv run pytest -m "not network" -q --tb=short
+      - name: Test (unit + library)
+        run: uv run pytest tests/test_unit.py tests/test_library.py -q
 
-  network-test:
-    name: pytest network suite
-    runs-on: ubuntu-latest
-    continue-on-error: true   # external dependency on YouTube; don't block merges
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
-        with:
-          version: "0.11.11"
-      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
-      - run: uv sync --extra ml --extra dev
-      - run: uv run pytest -m network -q --tb=short
+      - name: Test (integration + MCP + HTTP)
+        run: uv run pytest tests/test_integration.py tests/test_http_server.py tests/test_mcp_stdio.py -q
 
   docker:
-    name: docker compose smoke
+    name: docker build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build images
-        run: docker compose build api
-      - name: Up
-        run: docker compose up -d qdrant api
-      - name: Wait for API
-        run: |
-          for i in $(seq 1 60); do
-            if curl -sf http://localhost:8000/healthz; then exit 0; fi
-            sleep 2
-          done
-          docker compose logs
-          exit 1
-      - name: Down
-        if: always()
-        run: docker compose down -v
+      - run: docker build -t videomemory .

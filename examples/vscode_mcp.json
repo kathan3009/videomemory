@@ -1,9 +1,0 @@
-{
-  "servers": {
-    "videomemory": {
-      "command": "uv",
-      "args": ["run", "--project", "/absolute/path/to/videomemory", "videomemory", "mcp", "serve"],
-      "type": "stdio"
-    }
-  }
-}

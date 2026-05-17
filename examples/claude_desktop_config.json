@@ -1,6 +1,10 @@
 {
   "mcpServers": {
-    "videomemory": {
+    "videomemory_hosted": {
+      "url": "https://example.com/mcp",
+      "transport": "http"
+    },
+    "videomemory_local": {
       "command": "uv",
       "args": [
         "run",
@@ -8,9 +12,7 @@
         "/absolute/path/to/videomemory",
         "videomemory",
         "mcp",
-        "serve",
-        "--data-dir",
-        "/absolute/path/to/videomemory/data"
+        "serve"
       ]
     }
   }

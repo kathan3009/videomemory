@@ -1,3 +1,3 @@
-"""VideoMemory — a video memory operating system for AI agents."""
+"""videomemory — the video understanding layer for Claude Code & Codex."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

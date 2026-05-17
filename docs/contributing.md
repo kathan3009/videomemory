@@ -1,59 +1,55 @@
-# Contributing
+# contributing
 
-Thanks for considering a contribution! VideoMemory is an early-stage OSS project and we welcome issues, PRs, and ideas.
+PRs welcome. The codebase is intentionally tiny: ~10 files, ~1k lines.
 
-## Dev setup
+## dev loop
 
 ```bash
 git clone https://github.com/kathan3009/videomemory.git
 cd videomemory
-uv sync --extra ml --extra dev
-uv run python scripts/download_models.py
-uv run python tests/fixtures/make_videos.py
-uv run pytest -q
+uv sync --extra dev
+uv run videomemory setup        # checks deps + pre-pulls models
+
+uv run pytest -q                # 28 tests, ~40s
+uv run ruff check .             # lint
 ```
 
-Python 3.12 is required (pinned via `uv` — `pyproject.toml` excludes 3.13+).
+## file map
 
-## Layout
-
-See `docs/architecture.md` for the module map and design decisions.
-
-## Adding a tool to the MCP server
-
-1. Define the tool schema in `videomemory/mcp/server.py` (in `TOOL_DEFS`).
-2. Write the handler in `videomemory/mcp/tools.py`.
-3. Wire it in `_TOOL_HANDLERS`.
-4. Add a parallel HTTP route in `videomemory/api/app.py` if you want it usable from the frontend.
-5. Add an integration test under `tests/mcp/`.
-
-## Adding a retrieval modality
-
-The router lives in `videomemory/retrieval/router.py`. Add a new ranker function, then plug it into `retrieve_chunks`'s fusion list with an appropriate weight. The fusion uses Reciprocal Rank Fusion in `retrieval/fuse.py`.
-
-## Adding a model backend
-
-- **Embeddings**: implement a wrapper alongside `videomemory/embeddings/bge.py` and update `PipelineConfig.embedding_model`.
-- **Vector DB**: implement the `VectorStore` interface in `videomemory/vector/base.py`.
-- **LLM provider**: subclass `LLMProvider` in `videomemory/query/providers/base.py`.
-
-## Tests
-
-```bash
-uv run pytest -m "not network" -q       # offline
-uv run pytest -m network -q             # YouTube smoke
-uv run pytest --cov=videomemory -q      # with coverage
+```
+src/videomemory/
+├── __init__.py
+├── cli.py             # typer surface
+├── config.py          # data_dir + env knobs
+├── deps.py            # `videomemory setup` wizard
+├── embed.py           # bge-small wrapper
+├── frames.py          # single-frame extraction
+├── ingest.py          # yt-dlp → ffmpeg → whisper → windows → SQLite
+├── library.py         # SQLite schema + CRUD + bundle export/import
+├── mcp_server.py      # stdio MCP with 5 tools
+├── search.py          # skip() + search() via cosine
+├── server.py          # FastAPI: demo page + REST + HTTP MCP
+├── understand.py      # summary + chapters
+├── types.py           # Pydantic schemas
+└── youtube_history.py # Google Takeout parser
 ```
 
-## Code style
+## adding a feature
 
-`ruff` for lint, `mypy` for types. CI runs both.
+1. Land the logic in a small new module (or extend `search.py` / `understand.py`).
+2. Expose via MCP: add an entry to `TOOL_DEFS` in `mcp_server.py` + a handler in `_handle`.
+3. Mirror it as a REST route in `server.py` (one-liner most of the time).
+4. Add a CLI command in `cli.py`.
+5. Add a test under `tests/`. Reuse the `tutorial_ingested` / `science_ingested` session fixtures.
 
-```bash
-uv run ruff check .
-uv run mypy src/videomemory
-```
+## design principles
 
-## License
+- Simple beats clever. If a feature needs more than 50 lines, push back on the design first.
+- The agent is smarter than us. Don't pre-process; expose tools.
+- Frames as URIs, never blobs.
+- Idempotent everything. Re-running a command must be safe.
+- Tests live next to features, not in a separate "integration" folder.
+
+## license
 
 MIT — by submitting a PR you agree your contribution is offered under the same license.
