@@ -10,11 +10,16 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from sse_starlette.sse import EventSourceResponse
 
+from videomemory.api.safety import (
+    assert_local_duration_ok,
+    assert_url_duration_ok,
+    require_ingest_token,
+)
 from videomemory.config import get_settings
 from videomemory.pipeline.runner import run_ingest
 from videomemory.query.engine import answer_question
@@ -67,18 +72,19 @@ async def list_videos() -> dict:
     return {"videos": await sqlite_db.list_videos(_data_dir())}
 
 
-@app.post("/videos/ingest_url")
+@app.post("/videos/ingest_url", dependencies=[Depends(require_ingest_token)])
 async def ingest_url(body: dict, background: BackgroundTasks) -> dict:
     source = body.get("source")
     if not source:
         raise HTTPException(status_code=400, detail="source is required")
+    await assert_url_duration_ok(source)
     job_id = str(uuid.uuid4())
     _job_events[job_id] = asyncio.Queue()
     background.add_task(_run_ingest_async, source, job_id)
     return {"job_id": job_id}
 
 
-@app.post("/videos/upload")
+@app.post("/videos/upload", dependencies=[Depends(require_ingest_token)])
 async def upload(file: UploadFile = File(...), background: BackgroundTasks = None) -> dict:
     data_dir = _data_dir()
     incoming = data_dir / "uploads"
@@ -86,6 +92,7 @@ async def upload(file: UploadFile = File(...), background: BackgroundTasks = Non
     dest = incoming / f"{uuid.uuid4().hex}_{file.filename}"
     with open(dest, "wb") as f:
         shutil.copyfileobj(file.file, f)
+    await assert_local_duration_ok(dest)
     job_id = str(uuid.uuid4())
     _job_events[job_id] = asyncio.Queue()
     if background is not None:
