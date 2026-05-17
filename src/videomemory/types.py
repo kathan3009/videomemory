@@ -52,6 +52,30 @@ class Frame(BaseModel):
     frame_uri: str
 
 
+class SkipResult(BaseModel):
+    """Result of `skip(url, question)` — always usable, regardless of audio richness.
+
+    - mode='transcript': we found a confident transcript match.
+      `deep_link`, `timestamp_human`, `transcript_excerpt` are populated.
+      `frames` carries one frame at the hit timestamp.
+
+    - mode='visual': audio was too sparse / no confident match. `frames`
+      carries N sampled keyframes covering the video; the agent should look
+      at them with its own vision to answer.
+    """
+
+    mode: str                          # "transcript" | "visual"
+    video_id: str
+    title: str | None = None
+    source: str
+    confidence: float                  # 0..1; below ~0.30 triggers visual fallback
+    note: str                          # short hint for the agent
+    timestamp_human: str | None = None
+    deep_link: str | None = None
+    transcript_excerpt: str = ""
+    frames: list[Frame] = Field(default_factory=list)
+
+
 class Summary(BaseModel):
     """Used by `understand()`."""
 

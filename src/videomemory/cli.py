@@ -104,20 +104,22 @@ def skip(
     question: str = typer.Argument(...),
     json_out: bool = typer.Option(False, "--json"),
 ) -> None:
-    """Find the exact moment in `url` that answers `question`."""
+    """Answer a question about a video. Auto-falls back to visual frames if audio is sparse."""
     from videomemory.search import skip as one_skip
 
-    h = asyncio.run(one_skip(url, question))
+    r = asyncio.run(one_skip(url, question))
     if json_out:
-        console.print_json(data=h.model_dump(mode="json") if h else None)
-        return
-    if not h:
-        console.print("[red]no match[/red]"); raise typer.Exit(1)
-    console.print(f"\n[bold green]{h.timestamp_human}[/bold green]  {h.deep_link}")
-    console.print(f"[dim]{h.title or h.video_id}  · score={h.score:.3f}[/dim]\n")
-    console.print(h.transcript_excerpt)
-    if h.frame_uri:
-        console.print(f"\n[dim]frame: {h.frame_uri}[/dim]")
+        console.print_json(data=r.model_dump(mode="json")); return
+    title = r.title or r.video_id
+    console.print(f"\n[dim]{title}[/dim]  [{r.mode}]")
+    console.print(f"[dim]{r.note}[/dim]\n")
+    if r.mode == "transcript" and r.timestamp_human and r.deep_link:
+        console.print(f"[bold green]{r.timestamp_human}[/bold green]  {r.deep_link}")
+        console.print(r.transcript_excerpt)
+    else:
+        console.print(f"[yellow]visual mode[/yellow]  {len(r.frames)} frames sampled")
+    for f in r.frames:
+        console.print(f"  • {f.timestamp_human}  {f.deep_link}  · {f.frame_uri}")
 
 
 @app.command(name="frames")
