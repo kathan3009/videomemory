@@ -37,6 +37,9 @@ app = typer.Typer(
 mcp_app = typer.Typer(help="MCP server commands.")
 app.add_typer(mcp_app, name="mcp")
 
+scribe_app = typer.Typer(help="Scribe — full-screen capture, OCR, daily digests.")
+app.add_typer(scribe_app, name="scribe")
+
 console = Console()
 
 
@@ -244,6 +247,175 @@ def mcp_serve(
     from videomemory.mcp_server import serve_stdio
 
     asyncio.run(serve_stdio())
+
+
+# --------------------- scribe subcommands ---------------------
+
+
+@scribe_app.command("start")
+def scribe_start() -> None:
+    """Start the background capture daemon."""
+    from videomemory.scribe import daemon as d
+
+    pid = d.start_background()
+    console.print(f"[green]scribe started[/green]  pid={pid}  log={d.log_file()}")
+    console.print(
+        "[dim]first run on macOS will trigger the Screen Recording permission prompt.[/dim]"
+    )
+
+
+@scribe_app.command("stop")
+def scribe_stop() -> None:
+    from videomemory.scribe import daemon as d
+
+    ok = d.stop_background()
+    if ok:
+        console.print("[green]scribe stopped[/green]")
+    else:
+        console.print("[yellow]scribe was not running[/yellow]")
+
+
+@scribe_app.command("pause")
+def scribe_pause() -> None:
+    from videomemory.scribe import daemon as d
+
+    d.pause(); console.print("[yellow]paused[/yellow]")
+
+
+@scribe_app.command("resume")
+def scribe_resume() -> None:
+    from videomemory.scribe import daemon as d
+
+    d.resume(); console.print("[green]resumed[/green]")
+
+
+@scribe_app.command("status")
+def scribe_status() -> None:
+    from videomemory.scribe import daemon as d
+    from videomemory.scribe.store import stats as scribe_stats
+
+    pid = d.is_running()
+    s = scribe_stats()
+    state = "running" if pid else "stopped"
+    if d.is_paused():
+        state = "paused"
+    console.print(f"[bold]scribe[/bold] · {state}" + (f" (pid {pid})" if pid else ""))
+    console.print(f"[dim]log:[/dim]  {d.log_file()}")
+    t = Table(show_header=True, header_style="bold")
+    t.add_column("metric"); t.add_column("value", justify="right")
+    t.add_row("ephemeral frames",   str(s["ephemeral_frames"]))
+    t.add_row("ephemeral sessions", str(s["ephemeral_sessions"]))
+    t.add_row("ephemeral notes",    str(s["ephemeral_notes"]))
+    t.add_row("durable days",       str(s["durable_days"]))
+    t.add_row("durable lines",      str(s["durable_lines"]))
+    if s["first_capture"]:
+        t.add_row("first capture",  str(s["first_capture"]))
+    if s["last_capture"]:
+        t.add_row("last capture",   str(s["last_capture"]))
+    console.print(t)
+
+
+@scribe_app.command("end")
+def scribe_end() -> None:
+    """End the current day — compile digest, write durable markdown, purge raw frames."""
+    from videomemory.scribe.digest import build_today_digest
+
+    out = asyncio.run(build_today_digest())
+    if out is None:
+        console.print("[yellow]nothing captured today yet[/yellow]")
+        return
+    console.print(f"[green]day digest written[/green]  {out}")
+    console.print("[dim]raw frames + ephemeral sessions purged[/dim]")
+
+
+@scribe_app.command("digest")
+def scribe_digest() -> None:
+    """Same as `scribe end` — write today's digest now."""
+    scribe_end()
+
+
+@scribe_app.command("today")
+def scribe_today() -> None:
+    """Print today's digest if it exists, else compile one."""
+    from datetime import date as _date
+
+    from videomemory.scribe.digest import days_dir
+    today_md = days_dir() / f"{_date.today().isoformat()}.md"
+    if not today_md.exists():
+        from videomemory.scribe.digest import build_today_digest
+        out = asyncio.run(build_today_digest())
+        if out is None:
+            console.print("[yellow]no activity today[/yellow]"); return
+        today_md = out
+    console.print(today_md.read_text())
+
+
+@scribe_app.command("search")
+def scribe_cli_search(
+    query: str = typer.Argument(...),
+    top_k: int = typer.Option(8, "--top-k", "-k"),
+    since: str | None = typer.Option(None, "--since", help="e.g. 1d, 7d, 2h, or ISO date"),
+) -> None:
+    """Search across durable scribe day-lines."""
+    from videomemory.scribe.search import parse_relative
+    from videomemory.scribe.search import scribe_search as do_search
+
+    s = parse_relative(since) if since else None
+    hits = do_search(query, top_k=top_k, since=s)
+    if not hits:
+        console.print("[yellow]no hits[/yellow]"); return
+    t = Table(show_header=True, header_style="bold")
+    t.add_column("date"); t.add_column("kind"); t.add_column("score", justify="right"); t.add_column("text")
+    for h in hits:
+        text = h["text"][:90] + ("…" if len(h["text"]) > 90 else "")
+        t.add_row(h["date"], h["kind"], f"{h['score']:.3f}", text)
+    console.print(t)
+
+
+@scribe_app.command("forget")
+def scribe_forget(
+    since: str | None = typer.Option(None, "--since", help="e.g. 10m, 1h, 1d"),
+    app: str | None = typer.Option(None, "--app"),
+) -> None:
+    """Delete captured frames + sessions + notes since a relative time, or for an app."""
+    from videomemory.scribe.search import parse_relative
+    from videomemory.scribe.store import forget_app, forget_since
+
+    if since:
+        t = parse_relative(since)
+        r = forget_since(t)
+        console.print(f"[green]forgot[/green] frames={r['frames']} sessions={r['sessions']}")
+    elif app:
+        r = forget_app(app)
+        console.print(f"[green]forgot[/green] app={app} frames={r['frames']} sessions={r['sessions']}")
+    else:
+        console.print("[red]pass --since or --app[/red]"); raise typer.Exit(1)
+
+
+@scribe_app.command("blocklist")
+def scribe_blocklist(
+    action: str = typer.Argument(..., help="add | remove | list"),
+    target: str | None = typer.Argument(None),
+    kind: str = typer.Option("app", "--kind", help="app or url"),
+) -> None:
+    """Manage scribe's app/url blocklist."""
+    from videomemory.scribe import privacy as p
+
+    if action == "list":
+        apps, urls = p.blocklists()
+        console.print("[bold]apps[/bold]"); [console.print(f"  - {a}") for a in apps]
+        console.print("[bold]urls[/bold]"); [console.print(f"  - {u}") for u in urls]
+        return
+    if not target:
+        console.print("[red]missing target[/red]"); raise typer.Exit(1)
+    if action == "add":
+        (p.add_url if kind == "url" else p.add_app)(target)
+        console.print(f"[green]added[/green] {kind}: {target}")
+    elif action == "remove":
+        ok = (p.remove_url if kind == "url" else p.remove_app)(target)
+        console.print(f"[{'green' if ok else 'yellow'}]{'removed' if ok else 'not in user list'}[/]: {target}")
+    else:
+        console.print(f"[red]unknown action: {action}[/red]"); raise typer.Exit(1)
 
 
 def main() -> None:

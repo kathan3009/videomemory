@@ -28,7 +28,8 @@ async def test_stdio_lists_tools_and_calls_each(tutorial_ingested):
 
             tools = await session.list_tools()
             names = {t.name for t in tools.tools}
-            assert names == {"understand", "skip", "search", "frames", "add", "list"}
+            assert {"understand", "skip", "search", "frames", "add", "list"} <= names
+            assert {"scribe_search", "scribe_today", "scribe_status", "scribe_forget"} <= names
 
             lv = await session.call_tool("list", {})
             payload = json.loads(lv.content[0].text)
