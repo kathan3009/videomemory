@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "videomemory": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "/absolute/path/to/videomemory",
+        "videomemory",
+        "mcp",
+        "serve",
+        "--data-dir",
+        "/absolute/path/to/videomemory/data"
+      ]
+    }
+  }
+}

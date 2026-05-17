@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: pytest (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.11.11"
+          enable-cache: true
+
+      - name: Install ffmpeg (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install ffmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
+
+      - name: Sync deps
+        run: uv sync --extra ml --extra dev
+
+      - name: Build test fixtures
+        run: uv run python tests/fixtures/make_videos.py
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Run tests (offline)
+        run: uv run pytest -m "not network" -q --tb=short
+
+  network-test:
+    name: pytest network suite
+    runs-on: ubuntu-latest
+    continue-on-error: true   # external dependency on YouTube; don't block merges
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.11.11"
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: uv sync --extra ml --extra dev
+      - run: uv run pytest -m network -q --tb=short
+
+  docker:
+    name: docker compose smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build images
+        run: docker compose build api
+      - name: Up
+        run: docker compose up -d qdrant api
+      - name: Wait for API
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8000/healthz; then exit 0; fi
+            sleep 2
+          done
+          docker compose logs
+          exit 1
+      - name: Down
+        if: always()
+        run: docker compose down -v

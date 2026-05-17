@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# Virtual envs
+.venv/
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Node / Next.js
+node_modules/
+frontend/.next/
+frontend/out/
+frontend/.turbo/
+frontend/dist/
+frontend/coverage/
+frontend/test-results/
+frontend/playwright-report/
+
+# VideoMemory runtime artifacts
+data/
+artifacts/
+sample_data/cache/
+models/cache/
+qdrant_storage/
+*.sqlite
+*.sqlite-journal
+*.db
+
+# Logs
+*.log
+logs/
+
+# Test fixtures (generated, not committed)
+tests/fixtures/data/
+
+# Docker
+.docker-compose.override.yml
