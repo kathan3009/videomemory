@@ -141,6 +141,33 @@ def cmd_frames(
         console.print(f"  [green]{f.timestamp_human}[/green]  {f.deep_link}  · {f.frame_uri}")
 
 
+@app.command(name="look")
+def cmd_look(
+    url: str = typer.Argument(...),
+    question: str = typer.Argument(...),
+    k: int = typer.Option(9, "--k", "-k", help="How many frames to select."),
+    packing: str = typer.Option("auto", "--packing", help="auto | sheet | separate"),
+    json_out: bool = typer.Option(False, "--json"),
+) -> None:
+    """Visually understand any video: query-aware frame selection → contact sheet."""
+    import asyncio as _asyncio
+
+    from videomemory.visual_index import analyze
+
+    a = _asyncio.run(analyze(url, question, k=k, packing=packing))
+    if json_out:
+        console.print_json(data=a.model_dump(mode="json")); return
+    console.print(
+        f"[bold]{a.video_id}[/bold]  ·  {a.candidates_scanned} candidates → "
+        f"{a.indexed_frames} indexed → {len(a.frames)} selected  ·  packing=[cyan]{a.packing}[/cyan]"
+    )
+    if a.sheet_uri:
+        console.print(f"  contact sheet: [green]{a.sheet_uri}[/green]")
+    for i, f in enumerate(a.frames, 1):
+        console.print(f"  {i}. [green]{f.timestamp_human}[/green]  score={f.score:.3f}  {f.deep_link}")
+    console.print(f"\n[dim]{a.guidance}[/dim]")
+
+
 @app.command(name="search")
 def cmd_search(
     query: str = typer.Argument(...),

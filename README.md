@@ -3,7 +3,7 @@
 # 🎬 videomemory
 
 **give Claude Code & Codex eyes for video.**
-local. private. one MCP server, six tools, zero API keys.
+local. private. one MCP server, seven tools, zero API keys.
 
 [![MIT](https://img.shields.io/badge/license-MIT-black?style=flat-square)](LICENSE)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-3776ab?style=flat-square)](https://www.python.org/)
@@ -50,6 +50,7 @@ once installed, every Claude Code & Codex session gets these tools:
 | | tool | what it does |
 |---|---|---|
 | ⚡ | **`skip`**       | paste url + question. get timestamp + deep link + frame + transcript snippet. |
+| 👁️ | **`look`**       | visually understand *any* video. query-aware frame selection → one labeled contact sheet (~16× fewer vision tokens). no transcript needed. |
 | 🖼️ | **`frames`**     | sample N keyframes from any video. for visual stuff with no audio (comedy shorts, sports, silent demos). |
 | 🎧 | **`understand`** | watch the video for you. returns bullets + chapter timestamps + transcript. |
 | 📚 | **`search`**     | search across **every** video you've ever added. cross-video, semantic. |
@@ -59,7 +60,7 @@ frames come back as `videomemory://...` URIs that Claude fetches with native vis
 
 ---
 
-## three things that make it interesting
+## what makes it interesting
 
 ### ⚡ skip the bloat
 
@@ -70,6 +71,24 @@ frames come back as `videomemory://...` URIs that Claude fetches with native vis
 ```
 
 every dev's most-googled phrase: *"just give me the answer."* now Claude can.
+
+### 👁️ look at any video — cheaply
+
+`look` is generic visual understanding for **any** video (no transcript required). instead of dumping 16 full-res frames into context, it runs a cost-ordered funnel entirely on your machine:
+
+```
+ffmpeg ~1fps  →  dedup (perceptual hash + color, then CLIP semantics)
+              →  query-aware top-k  →  MMR for time-diversity
+              →  ONE labeled contact sheet  →  Claude's vision
+```
+
+the index is built once per video (and reused across questions); only the handful of frames relevant to *your* question get packed into a single labeled grid — **~16× fewer vision tokens** than sending them separately, at equal-or-better accuracy. text/OCR queries auto-fall-back to separate full-res frames (grids soften small text).
+
+```bash
+videomemory look https://youtu.be/X "when does the drone take off?"
+```
+
+grounded in the research (SeViLA: 73.8% on 4 query-selected frames · IG-VLM: a frame grid beats prior SOTA on 9/10 video-QA benchmarks · LVNet: 12 selected ≈ 90 uniform).
 
 ### 📚 your YouTube history is searchable
 
@@ -106,17 +125,18 @@ URL  →  yt-dlp + ffmpeg  →  faster-whisper  →  30s text windows
                                                       ↓
                        cosine retrieval  +  on-demand ffmpeg keyframes
                                                       ↓
-                                      6 MCP tools  (stdio transport)
+                                      7 MCP tools  (stdio transport)
                                                       ↓
                                Claude Code  ·  Codex  ·  any MCP client
 ```
 
-**deliberately minimal.** no Qdrant, no CLIP, no OCR, no object detection, no scene graphs, no LLM-call summarization, no cloud anything. just transcript + embeddings + cosine + ffmpeg + the agent's own vision.
+`look` adds a parallel **visual** index: ffmpeg keyframes → MobileCLIP-S2 image embeddings → SQLite → query-aware retrieval + a contact-sheet packer. still no Qdrant, no OCR engine, no object detection, no cloud anything — just transcript + embeddings + cosine + CLIP + ffmpeg + the agent's own vision.
 
 | | dep | size |
 |---|---|---:|
 | 🔊 | faster-whisper (small) | ~470 MB |
 | 🧠 | bge-small-en-v1.5      | ~120 MB |
+| 👁️ | MobileCLIP-S2 (open_clip) | ~150 MB |
 | 🎬 | ffmpeg + yt-dlp        | tiny |
 | 🗄️ | sqlite                | – |
 
@@ -128,6 +148,7 @@ after first run: **fully offline.** no API keys, ever.
 
 ```bash
 videomemory skip https://youtu.be/X "where do they configure Tailwind?"
+videomemory look https://youtu.be/X "what's on screen when the error appears?"
 videomemory frames https://youtu.be/X --count 8
 videomemory understand https://youtu.be/X
 videomemory search "Postgres index tuning"
@@ -165,9 +186,11 @@ src/videomemory/
 ├── ingest.py            # yt-dlp → ffmpeg → faster-whisper → 30s windows
 ├── search.py            # skip() + search() via cosine
 ├── frames.py            # extract one or many keyframes
+├── visual_index.py      # look(): the visual funnel (dedup → CLIP → retrieve → contact sheet)
+├── clip_embed.py        # MobileCLIP-S2 image+text embedder (CLIP fallback)
 ├── understand.py        # bullets + chapters (LLM if key present, else extractive)
 ├── library.py           # SQLite schema + CRUD + bundle export/import
-├── mcp_server.py        # stdio MCP, 6 tools
+├── mcp_server.py        # stdio MCP, 7 tools
 ├── youtube_history.py   # Google Takeout parser
 ├── deps.py              # `videomemory setup` wizard
 ├── embed.py             # bge-small wrapper
@@ -176,7 +199,7 @@ src/videomemory/
 └── config.py            # env knobs
 ```
 
-≈1k lines. read it in 20 minutes.
+read it in 20 minutes.
 
 ---
 
@@ -188,7 +211,7 @@ curious what you'd want most:
 - 🌐 Loom / Twitch VOD / Vimeo
 - 🧭 Chrome extension that auto-ingests as you watch
 - 🔁 livestream / long-video segmented re-indexing
-- 🎬 visual scene search (compute CLIP embeddings on frames)
+- 🌳 agentic frame escalation for `look` (request more frames when unsure)
 
 open an issue with what you'd actually use.
 

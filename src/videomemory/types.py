@@ -52,6 +52,31 @@ class Frame(BaseModel):
     frame_uri: str
 
 
+class VisualFrame(BaseModel):
+    """One query-relevant frame chosen by the visual funnel."""
+
+    timestamp_seconds: float
+    timestamp_human: str
+    deep_link: str
+    frame_uri: str
+    score: float            # CLIP cosine to the query (visual relevance)
+
+
+class VisualAnalysis(BaseModel):
+    """Result of the visual-understanding funnel for one (video, question)."""
+
+    video_id: str
+    source: str
+    question: str
+    duration: float
+    indexed_frames: int     # distinct frames in the visual index after dedup
+    candidates_scanned: int # raw candidates sampled before dedup
+    packing: str            # "contact_sheet" | "separate"
+    sheet_uri: str | None = None      # one labeled grid image (contact_sheet mode)
+    frames: list[VisualFrame] = Field(default_factory=list)
+    guidance: str = ""      # how Claude should read the returned image(s)
+
+
 class Summary(BaseModel):
     """Used by `understand()`."""
 

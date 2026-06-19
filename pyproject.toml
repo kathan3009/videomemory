@@ -32,6 +32,9 @@ dependencies = [
     "tiktoken>=0.7",
     # Embeddings (light, ~120 MB)
     "sentence-transformers>=3.0",
+    # Visual funnel: MobileCLIP-S2 joint image+text embeddings (falls back to
+    # sentence-transformers CLIP if absent)
+    "open-clip-torch>=2.24",
     # Transcription (CTranslate2, ARM-friendly)
     "faster-whisper>=1.0",
     # Torch is a transitive of sentence-transformers + faster-whisper

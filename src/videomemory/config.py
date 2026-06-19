@@ -44,3 +44,25 @@ def embed_model() -> str:
 
 def window_seconds() -> int:
     return int(os.environ.get("VIDEOMEMORY_WINDOW_SECONDS", "30"))
+
+
+# ---- Visual funnel knobs (generic video understanding) ----
+
+def visual_candidate_fps() -> float:
+    """Frames-per-second sampled as candidates before dedup (1 fps is the standard)."""
+    return float(os.environ.get("VIDEOMEMORY_VISUAL_FPS", "1.0"))
+
+
+def visual_candidate_px() -> int:
+    """Long-edge px for candidate frames used only for embedding/dedup (kept tiny)."""
+    return int(os.environ.get("VIDEOMEMORY_VISUAL_CAND_PX", "336"))
+
+
+def visual_dhash_threshold() -> int:
+    """Hamming distance below which two frames are pixel-near-duplicates."""
+    return int(os.environ.get("VIDEOMEMORY_VISUAL_DHASH", "6"))
+
+
+def visual_semantic_dedup() -> float:
+    """CLIP cosine above which two frames are semantic near-duplicates."""
+    return float(os.environ.get("VIDEOMEMORY_VISUAL_SEMDEDUP", "0.92"))

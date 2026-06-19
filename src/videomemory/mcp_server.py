@@ -1,6 +1,6 @@
 """MCP server exposing videomemory over stdio.
 
-6 tools: understand, skip, search, frames, add, list.
+7 tools: understand, skip, search, frames, look, add, list.
 Frames are served as `videomemory://frames/<video_id>/<file>` resources so
 clients can fetch them on demand rather than receiving base64 blobs.
 """
@@ -21,6 +21,7 @@ from videomemory.library import list_videos as lib_list_videos
 from videomemory.search import search as cross_search
 from videomemory.search import skip as one_skip
 from videomemory.understand import understand as one_understand
+from videomemory.visual_index import analyze as visual_analyze
 
 log = logging.getLogger(__name__)
 
@@ -92,6 +93,33 @@ TOOL_DEFS: list[mt.Tool] = [
         },
     ),
     mt.Tool(
+        name="look",
+        description=(
+            "Visually understand ANY video and answer a question about what's on screen — "
+            "token-efficiently. Builds a deduped CLIP index of the video once (no transcription), "
+            "then retrieves only the handful of frames relevant to your question and packs them into "
+            "a SINGLE labeled contact-sheet image (~16x cheaper than sending many frames). Use this "
+            "over `frames` for visual Q&A ('when does X happen', 'what is the person doing', 'find the "
+            "shot with Y'). Returns sheet_uri (fetch + view it) plus the chosen frames' timestamps and "
+            "deep links. For fine text/OCR it auto-returns separate full-res frames instead."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "YouTube URL or local file path."},
+                "question": {"type": "string", "description": "What you want to understand visually."},
+                "k": {"type": "integer", "default": 9, "description": "How many frames to select (default 9)."},
+                "packing": {
+                    "type": "string",
+                    "enum": ["auto", "sheet", "separate"],
+                    "default": "auto",
+                    "description": "auto = contact sheet, separate frames for OCR queries.",
+                },
+            },
+            "required": ["url", "question"],
+        },
+    ),
+    mt.Tool(
         name="add",
         description="Add a video to the library without asking a question (just ingest + index).",
         inputSchema={
@@ -129,6 +157,15 @@ async def _handle(name: str, args: dict) -> dict:
             at=args.get("at"),
         )
         return {"frames": [f.model_dump(mode="json") for f in frames]}
+
+    if name == "look":
+        a = await visual_analyze(
+            args["url"],
+            args["question"],
+            k=int(args.get("k", 9)),
+            packing=args.get("packing", "auto"),
+        )
+        return a.model_dump(mode="json")
 
     if name == "add":
         v = await ingest(args["url"])

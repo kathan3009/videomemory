@@ -39,6 +39,20 @@ CREATE TABLE IF NOT EXISTS windows (
     vec        BLOB
 );
 CREATE INDEX IF NOT EXISTS idx_windows_video ON windows(video_id);
+
+-- Visual funnel: CLIP-embedded keyframes for query-aware, token-frugal visual QA.
+-- One row per deduped candidate frame; `model` records which embedder produced
+-- `vec` (vectors are only comparable within one model).
+CREATE TABLE IF NOT EXISTS visual_frames (
+    frame_id   TEXT PRIMARY KEY,        -- f"{video_id}__v{idx:05d}"
+    video_id   TEXT NOT NULL,
+    idx        INTEGER NOT NULL,
+    t          REAL NOT NULL,           -- timestamp seconds
+    dhash      INTEGER,                 -- 64-bit perceptual hash
+    model      TEXT NOT NULL,           -- embedder id, e.g. "mobileclip-s2"
+    vec        BLOB NOT NULL            -- float32 CLIP image embedding
+);
+CREATE INDEX IF NOT EXISTS idx_vframes_video ON visual_frames(video_id);
 """
 
 
@@ -85,6 +99,7 @@ def list_videos() -> list[Video]:
 def delete_video(video_id: str) -> None:
     with connect() as con:
         con.execute("DELETE FROM windows WHERE video_id=?", (video_id,))
+        con.execute("DELETE FROM visual_frames WHERE video_id=?", (video_id,))
         con.execute("DELETE FROM videos WHERE video_id=?", (video_id,))
         con.commit()
 
@@ -172,6 +187,61 @@ def iter_windows_for_video(video_id: str) -> list[tuple[Window, np.ndarray]]:
     return out
 
 
+# ----- Visual frames (CLIP image embeddings) -----------------------------
+
+
+def has_visual_frames(video_id: str, model: str | None = None) -> bool:
+    q = "SELECT COUNT(*) FROM visual_frames WHERE video_id=?"
+    args: tuple = (video_id,)
+    if model is not None:
+        q += " AND model=?"
+        args = (video_id, model)
+    with connect() as con:
+        return con.execute(q, args).fetchone()[0] > 0
+
+
+def insert_visual_frames(video_id: str, model: str, rows: list[dict]) -> None:
+    """rows = [{t, dhash, vec}, ...]; vec is a list[float] / np array."""
+    if not rows:
+        return
+    out: list[tuple] = []
+    for i, r in enumerate(rows):
+        vec = r.get("vec")
+        if vec is None:
+            continue
+        blob = np.asarray(vec, dtype=np.float32).tobytes()
+        dh = r.get("dhash")
+        if dh is not None:  # 64-bit unsigned dHash → signed for SQLite's int64
+            dh = int.from_bytes((dh & 0xFFFFFFFFFFFFFFFF).to_bytes(8, "big"), "big", signed=True)
+        out.append((f"{video_id}__v{i:05d}", video_id, i, float(r["t"]), dh, model, blob))
+    if not out:
+        return
+    with connect() as con:
+        con.execute("DELETE FROM visual_frames WHERE video_id=?", (video_id,))
+        con.executemany(
+            "INSERT OR REPLACE INTO visual_frames (frame_id, video_id, idx, t, dhash, model, vec) "
+            "VALUES (?,?,?,?,?,?,?)",
+            out,
+        )
+        con.commit()
+
+
+def iter_visual_frames(video_id: str) -> tuple[str | None, list[tuple[float, np.ndarray]]]:
+    """Return (model, [(t, vec), ...]) for a video, ordered by time."""
+    with connect() as con:
+        rows = con.execute(
+            "SELECT t, model, vec FROM visual_frames WHERE video_id=? ORDER BY idx", (video_id,)
+        ).fetchall()
+    model: str | None = None
+    out: list[tuple[float, np.ndarray]] = []
+    for r in rows:
+        if not r["vec"]:
+            continue
+        model = r["model"]
+        out.append((float(r["t"]), np.frombuffer(r["vec"], dtype=np.float32)))
+    return model, out
+
+
 # ----- Bundle export/import ----------------------------------------------
 
 
@@ -242,6 +312,9 @@ __all__ = [
     "get_windows",
     "iter_all_windows",
     "iter_windows_for_video",
+    "has_visual_frames",
+    "insert_visual_frames",
+    "iter_visual_frames",
     "export_bundle",
     "import_bundle",
     "stats",
