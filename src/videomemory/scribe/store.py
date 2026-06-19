@@ -84,6 +84,20 @@ CREATE TABLE IF NOT EXISTS scribe_day_lines (
 );
 CREATE INDEX IF NOT EXISTS idx_sdlines_date ON scribe_day_lines(date);
 CREATE INDEX IF NOT EXISTS idx_sdlines_kind ON scribe_day_lines(kind);
+
+-- Visual semantics: CLIP-embedded screenshots so we can search by "photo of cat",
+-- "dark dashboard", etc — even when there's no OCR text on screen.
+CREATE TABLE IF NOT EXISTS scribe_day_visuals (
+    visual_id       TEXT PRIMARY KEY,
+    date            TEXT NOT NULL,
+    timestamp_human TEXT NOT NULL,           -- "HH:MM"
+    app             TEXT NOT NULL DEFAULT '',
+    title           TEXT NOT NULL DEFAULT '',
+    url             TEXT,
+    caption         TEXT NOT NULL DEFAULT '',  -- short OCR/context excerpt for display
+    vec             BLOB NOT NULL              -- CLIP-ViT-B-32 image embedding (512-d)
+);
+CREATE INDEX IF NOT EXISTS idx_sdvisuals_date ON scribe_day_visuals(date);
 """
 
 
@@ -408,6 +422,7 @@ def stats() -> dict:
         n_notes = con.execute("SELECT COUNT(*) FROM scribe_notes").fetchone()[0]
         n_days = con.execute("SELECT COUNT(*) FROM scribe_days").fetchone()[0]
         n_lines = con.execute("SELECT COUNT(*) FROM scribe_day_lines").fetchone()[0]
+        n_visuals = con.execute("SELECT COUNT(*) FROM scribe_day_visuals").fetchone()[0]
         first = con.execute("SELECT MIN(captured_at) FROM scribe_frames").fetchone()[0]
         last = con.execute("SELECT MAX(captured_at) FROM scribe_frames").fetchone()[0]
     return {
@@ -416,6 +431,7 @@ def stats() -> dict:
         "ephemeral_notes": n_notes,
         "durable_days": n_days,
         "durable_lines": n_lines,
+        "durable_visuals": n_visuals,
         "first_capture": first,
         "last_capture": last,
     }
@@ -511,5 +527,74 @@ def delete_day(date: str) -> bool:
     with connect() as con:
         n = con.execute("DELETE FROM scribe_day_lines WHERE date=?", (date,)).rowcount
         m = con.execute("DELETE FROM scribe_days WHERE date=?", (date,)).rowcount
+        con.execute("DELETE FROM scribe_day_visuals WHERE date=?", (date,))
         con.commit()
     return n > 0 or m > 0
+
+
+# ----- Durable visuals (CLIP image embeddings) ---------------------------
+
+
+def insert_day_visuals(
+    date: str,
+    visuals: list[dict],
+) -> None:
+    """visuals = [{timestamp_human, app, title, url, caption, vec}, ...]"""
+    import uuid as _uuid
+
+    if not visuals:
+        return
+    rows = []
+    for v in visuals:
+        vec = v.get("vec")
+        if vec is None:
+            continue
+        blob = np.asarray(vec, dtype=np.float32).tobytes()
+        rows.append(
+            (
+                str(_uuid.uuid4()),
+                date,
+                v.get("timestamp_human", ""),
+                v.get("app", ""),
+                v.get("title", ""),
+                v.get("url"),
+                v.get("caption", ""),
+                blob,
+            )
+        )
+    if not rows:
+        return
+    with connect() as con:
+        con.executemany(
+            """INSERT INTO scribe_day_visuals
+               (visual_id, date, timestamp_human, app, title, url, caption, vec)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            rows,
+        )
+        con.commit()
+
+
+def all_day_visuals_with_vecs() -> list[tuple[dict, np.ndarray]]:
+    out: list[tuple[dict, np.ndarray]] = []
+    with connect() as con:
+        rows = con.execute("SELECT * FROM scribe_day_visuals").fetchall()
+    for r in rows:
+        vec_b = r["vec"]
+        if not vec_b:
+            continue
+        arr = np.frombuffer(vec_b, dtype=np.float32)
+        out.append(
+            (
+                {
+                    "visual_id": r["visual_id"],
+                    "date": r["date"],
+                    "timestamp_human": r["timestamp_human"],
+                    "app": r["app"],
+                    "title": r["title"],
+                    "url": r["url"],
+                    "caption": r["caption"],
+                },
+                arr,
+            )
+        )
+    return out

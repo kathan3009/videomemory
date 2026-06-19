@@ -308,6 +308,7 @@ def scribe_status() -> None:
     t.add_row("ephemeral notes",    str(s["ephemeral_notes"]))
     t.add_row("durable days",       str(s["durable_days"]))
     t.add_row("durable lines",      str(s["durable_lines"]))
+    t.add_row("durable visuals",    str(s.get("durable_visuals", 0)))
     if s["first_capture"]:
         t.add_row("first capture",  str(s["first_capture"]))
     if s["last_capture"]:

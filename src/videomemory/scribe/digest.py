@@ -23,12 +23,14 @@ from videomemory.config import data_dir
 from videomemory.embed import embed_texts
 from videomemory.scribe.store import (
     insert_day_lines,
+    insert_day_visuals,
     purge_ephemeral,
     recent_frames,
     sessions_between,
     upsert_day,
 )
 from videomemory.scribe.types import Frame, Session
+from videomemory.scribe import visual_embed
 
 DAY_KINDS = {"did", "learned", "decided", "todo", "saw", "seen"}
 
@@ -169,33 +171,107 @@ def _extract_json(text: str) -> dict | None:
 # ---------- extractive fallback (no LLM) ----------
 
 
+def _norm_tokens(text: str) -> set[str]:
+    return {t for t in text.lower().split() if len(t) > 2}
+
+
+def _is_near_duplicate(toks: set[str], kept_toks: list[set[str]], threshold: float = 0.6) -> bool:
+    if len(toks) < 3:
+        return True  # too short to be meaningful
+    for prev in kept_toks:
+        if not prev:
+            continue
+        overlap = len(toks & prev) / max(1, min(len(toks), len(prev)))
+        if overlap >= threshold:
+            return True
+    return False
+
+
+def _distinct_snippets(frames: list[Frame], max_per_session: int = 12) -> list[tuple[str, str]]:
+    """Return [(timestamp, snippet)] keeping only OCR snippets that aren't near-duplicates."""
+    out: list[tuple[str, str]] = []
+    kept_toks: list[set[str]] = []
+    for f in frames:
+        txt = (f.ocr_text or "").strip()
+        if not txt:
+            continue
+        snippet = " ".join(txt.split())
+        if len(snippet) < 8:
+            continue
+        # Truncate per-snippet to keep markdown reasonable; full text is gone after purge.
+        snippet = snippet[:240]
+        toks = _norm_tokens(snippet)
+        if _is_near_duplicate(toks, kept_toks):
+            continue
+        out.append((f.captured_at.strftime("%H:%M"), snippet))
+        kept_toks.append(toks)
+        if len(out) >= max_per_session:
+            break
+    return out
+
+
+def _pick_keyframes(frames: list[Frame], n: int = 3) -> list[Frame]:
+    """Pick ~n evenly-spaced frames from a session for CLIP embedding."""
+    if not frames:
+        return []
+    if len(frames) <= n:
+        return frames
+    step = len(frames) / n
+    return [frames[int(i * step)] for i in range(n)]
+
+
+def _url_runs(frames: list[Frame]) -> list[tuple[str, str, float]]:
+    """Group consecutive frames by URL → [(url, first_ts_HHMM, duration_seconds)]."""
+    runs: list[tuple[str, str, float]] = []
+    cur_url: str | None = None
+    cur_start = None
+    cur_end = None
+    for f in frames:
+        u = (f.context.url or "").strip()
+        if not u:
+            if cur_url is not None:
+                runs.append((cur_url, cur_start.strftime("%H:%M"), (cur_end - cur_start).total_seconds()))
+                cur_url, cur_start, cur_end = None, None, None
+            continue
+        if u != cur_url:
+            if cur_url is not None:
+                runs.append((cur_url, cur_start.strftime("%H:%M"), (cur_end - cur_start).total_seconds()))
+            cur_url = u
+            cur_start = f.captured_at
+            cur_end = f.captured_at
+        else:
+            cur_end = f.captured_at
+    if cur_url is not None:
+        runs.append((cur_url, cur_start.strftime("%H:%M"), (cur_end - cur_start).total_seconds()))
+    return runs
+
+
 def _heuristic_digest(sessions: list[Session], frames_by_session: dict[str, list[Frame]]) -> dict:
     """Produce a deterministic, useful-enough digest without any LLM."""
     lines: list[dict] = []
     total = sum(s.duration_seconds for s in sessions)
     for s in sessions:
         ts = s.started_at.strftime("%H:%M")
-        dur_min = round(s.duration_seconds / 60.0, 1)
-        title = s.title_summary or s.app
-        if dur_min < 1:
+        secs = s.duration_seconds
+        if secs < 3:
             continue
-        if s.url:
-            lines.append({"kind": "did", "text": f"[{ts}] {s.app} — {title} ({dur_min}m) · {s.url}"})
-        else:
-            lines.append({"kind": "did", "text": f"[{ts}] {s.app} — {title} ({dur_min}m)"})
+        dur_str = f"{round(secs/60.0, 1)}m" if secs >= 60 else f"{int(round(secs))}s"
+        title = s.title_summary or s.app
         frames = frames_by_session.get(s.session_id, [])
-        if frames:
-            # surface one distinctive OCR snippet per session, if any
-            seen: set[str] = set()
-            for f in frames[:3]:
-                txt = (f.ocr_text or "").strip()
-                if not txt:
-                    continue
-                snippet = " ".join(txt.split())[:140]
-                if snippet not in seen and len(snippet) > 12:
-                    lines.append({"kind": "saw", "text": f"[{ts}] {snippet}"})
-                    seen.add(snippet)
-                    break
+
+        # One umbrella "did" line for the session.
+        lines.append({"kind": "did", "text": f"[{ts}] {s.app} — {title} ({dur_str})"})
+
+        # One additional "did" line per distinct URL visited within the session.
+        url_runs = _url_runs(frames)
+        for url, run_ts, run_secs in url_runs:
+            if run_secs < 2:
+                continue
+            run_dur = f"{round(run_secs/60.0, 1)}m" if run_secs >= 60 else f"{int(round(run_secs))}s"
+            lines.append({"kind": "did", "text": f"[{run_ts}] {s.app} · {url} ({run_dur})"})
+
+        for snip_ts, snippet in _distinct_snippets(frames):
+            lines.append({"kind": "saw", "text": f"[{snip_ts}] {snippet}"})
     summary = f"{len(sessions)} session(s), ~{round(total/60.0,1)} active minutes."
     return {"summary": summary, "lines": lines}
 
@@ -293,6 +369,34 @@ async def build_today_digest(*, force: bool = False) -> Path | None:
     )
     if lines_for_embed:
         insert_day_lines(date_str, lines_for_embed, vecs)
+
+    # ----- CLIP visual embeddings on representative keyframes ---------------
+    # Embed BEFORE purge_ephemeral() because that unlinks the JPGs.
+    if visual_embed.available():
+        from pathlib import Path as _Path
+
+        keyframe_records: list[dict] = []
+        keyframe_paths: list[_Path] = []
+        for s in sessions:
+            sf = frames_by_session.get(s.session_id, [])
+            for kf in _pick_keyframes(sf, n=3):
+                p = _Path(kf.frame_path)
+                if not p.exists():
+                    continue
+                ocr_head = " ".join((kf.ocr_text or "").split())[:160]
+                keyframe_records.append({
+                    "timestamp_human": kf.captured_at.strftime("%H:%M"),
+                    "app": kf.context.app,
+                    "title": kf.context.title,
+                    "url": kf.context.url,
+                    "caption": ocr_head,
+                })
+                keyframe_paths.append(p)
+        if keyframe_paths:
+            vecs_img = visual_embed.embed_images(keyframe_paths)
+            for rec, v in zip(keyframe_records, vecs_img):
+                rec["vec"] = v
+            insert_day_visuals(date_str, [r for r in keyframe_records if r.get("vec") is not None])
 
     # Purge the raw ephemeral storage. This is the privacy-critical step.
     purge_ephemeral()

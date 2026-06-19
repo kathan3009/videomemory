@@ -26,16 +26,20 @@ end run
 _SAFARI_URL = 'tell application "Safari" to return URL of current tab of front window'
 _CHROME_URL = 'tell application "Google Chrome" to return URL of active tab of front window'
 _ARC_URL    = 'tell application "Arc" to return URL of active tab of front window'
-_FIREFOX_URL_FALLBACK = (
-    # Firefox doesn't expose URL via AppleScript. Use the window title heuristic.
-    None
-)
+_BRAVE_URL  = 'tell application "Brave Browser" to return URL of active tab of front window'
+_EDGE_URL   = 'tell application "Microsoft Edge" to return URL of active tab of front window'
+_VIVALDI_URL = 'tell application "Vivaldi" to return URL of active tab of front window'
+_OPERA_URL  = 'tell application "Opera" to return URL of active tab of front window'
 
 _BROWSER_HANDLERS: dict[str, str] = {
     "Safari": _SAFARI_URL,
     "Google Chrome": _CHROME_URL,
     "Chrome": _CHROME_URL,
     "Arc": _ARC_URL,
+    "Brave Browser": _BRAVE_URL,
+    "Microsoft Edge": _EDGE_URL,
+    "Vivaldi": _VIVALDI_URL,
+    "Opera": _OPERA_URL,
 }
 
 
