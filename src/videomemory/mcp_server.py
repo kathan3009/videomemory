@@ -1,8 +1,9 @@
 """MCP server exposing videomemory over stdio.
 
-6 tools: understand, skip, search, frames, add, list.
-Frames are served as `videomemory://frames/<video_id>/<file>` resources so
-clients can fetch them on demand rather than receiving base64 blobs.
+Video tools: understand, skip, search, frames, add, list.
+Scribe tools (if scribe extras installed): scribe_search, scribe_today,
+scribe_status, scribe_forget.
+Frames served as `videomemory://frames/<video_id>/<file>` resources.
 """
 
 from __future__ import annotations
@@ -105,6 +106,49 @@ TOOL_DEFS: list[mt.Tool] = [
         description="List videos currently in the library.",
         inputSchema={"type": "object", "properties": {}, "required": []},
     ),
+    mt.Tool(
+        name="scribe_search",
+        description=(
+            "Search across the user's durable day digests (what scribe wrote about their "
+            "screen activity each day). Returns matched lines with date + kind (did | learned | "
+            "decided | todo | saw). Use this for questions like 'what did I work on last week?' "
+            "or 'what did I learn about Postgres recently?'."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "since": {"type": "string", "description": "relative (1d, 7d, 2h) or ISO date"},
+                "top_k": {"type": "integer", "default": 8},
+            },
+            "required": ["query"],
+        },
+    ),
+    mt.Tool(
+        name="scribe_today",
+        description="Return today's day-digest markdown (compiles it now if not yet written).",
+        inputSchema={"type": "object", "properties": {}, "required": []},
+    ),
+    mt.Tool(
+        name="scribe_status",
+        description="Return scribe daemon status + live counts (ephemeral frames, durable days, etc.).",
+        inputSchema={"type": "object", "properties": {}, "required": []},
+    ),
+    mt.Tool(
+        name="scribe_forget",
+        description=(
+            "Delete captured frames + sessions since a relative time, or for a specific app. "
+            "Privacy-critical: use when the user said something sensitive was on screen."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "since": {"type": "string", "description": "10m, 1h, 1d, etc."},
+                "app":   {"type": "string"},
+            },
+            "required": [],
+        },
+    ),
 ]
 
 
@@ -136,6 +180,50 @@ async def _handle(name: str, args: dict) -> dict:
 
     if name == "list":
         return {"videos": [v.model_dump(mode="json") for v in lib_list_videos()]}
+
+    if name == "scribe_search":
+        from videomemory.scribe.search import parse_relative, scribe_search
+
+        since = parse_relative(args["since"]) if args.get("since") else None
+        hits = scribe_search(args["query"], top_k=int(args.get("top_k", 8)), since=since)
+        return {"hits": hits}
+
+    if name == "scribe_today":
+        from datetime import date as _date
+
+        from videomemory.scribe.digest import build_today_digest, days_dir
+
+        today_md = days_dir() / f"{_date.today().isoformat()}.md"
+        if not today_md.exists():
+            out = await build_today_digest()
+            if out is None:
+                return {"markdown": "", "note": "no activity captured today"}
+            today_md = out
+        return {"date": _date.today().isoformat(), "markdown": today_md.read_text()}
+
+    if name == "scribe_status":
+        from videomemory.scribe import daemon as d
+        from videomemory.scribe.store import stats as s_stats
+
+        pid = d.is_running()
+        return {
+            "running": bool(pid),
+            "pid": pid,
+            "paused": d.is_paused(),
+            **s_stats(),
+        }
+
+    if name == "scribe_forget":
+        from videomemory.scribe.search import parse_relative
+        from videomemory.scribe.store import forget_app, forget_since
+
+        if args.get("since"):
+            r = forget_since(parse_relative(args["since"]))
+        elif args.get("app"):
+            r = forget_app(args["app"])
+        else:
+            raise ValueError("pass 'since' or 'app'")
+        return {"deleted": r}
 
     raise ValueError(f"unknown tool: {name}")
 
