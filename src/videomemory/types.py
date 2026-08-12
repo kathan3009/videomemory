@@ -77,6 +77,59 @@ class VisualAnalysis(BaseModel):
     guidance: str = ""      # how Claude should read the returned image(s)
 
 
+class Shot(BaseModel):
+    """One detected shot with frame-accurate in/out points."""
+
+    index: int              # 1-based, in chronological order
+    start_seconds: float    # in-point (frame-accurate cut)
+    end_seconds: float      # out-point (start of the next shot, or duration)
+    duration_seconds: float
+    start_human: str
+    end_human: str
+    mid_seconds: float      # representative timestamp (shot midpoint)
+    deep_link: str          # link to the in-point
+    frame_uri: str | None = None  # representative keyframe at mid_seconds
+
+
+class ShotList(BaseModel):
+    """All shots detected in one video — an editable cut list / EDL skeleton."""
+
+    video_id: str
+    source: str
+    duration: float
+    threshold: float        # scene-score threshold used
+    shots: list[Shot] = Field(default_factory=list)
+
+
+class CutSegment(BaseModel):
+    """One suggested sub-clip with frame-accurate in/out, chosen on motion + beat."""
+
+    index: int
+    in_seconds: float
+    out_seconds: float
+    duration_seconds: float
+    in_human: str
+    out_human: str
+    in_kind: str            # "settle" (stable framing) | "start" | "carry"
+    out_kind: str           # "motion_peak" | "beat" | "target"
+    beats: float | None = None   # how many music beats this clip spans (if beat-aligned)
+    deep_link: str
+    frame_uri: str | None = None  # keyframe at the in-point
+
+
+class CutPlan(BaseModel):
+    """Frame-accurate cut suggestions for a take: where (motion) × how long (beat)."""
+
+    video_id: str
+    source: str
+    duration: float
+    bpm: float | None = None
+    beat_period: float | None = None
+    motion_fps: float = 0.0
+    segments: list[CutSegment] = Field(default_factory=list)
+    notes: str = ""
+
+
 class Summary(BaseModel):
     """Used by `understand()`."""
 

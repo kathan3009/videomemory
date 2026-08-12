@@ -3,7 +3,7 @@
 # 🎬 videomemory
 
 **give Claude Code & Codex eyes for video.**
-local. private. one MCP server, seven tools, zero API keys.
+local. private. one MCP server, nine tools, zero API keys.
 
 [![MIT](https://img.shields.io/badge/license-MIT-black?style=flat-square)](LICENSE)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-3776ab?style=flat-square)](https://www.python.org/)
@@ -51,6 +51,8 @@ once installed, every Claude Code & Codex session gets these tools:
 |---|---|---|
 | ⚡ | **`skip`**       | paste url + question. get timestamp + deep link + frame + transcript snippet. |
 | 👁️ | **`look`**       | visually understand *any* video. query-aware frame selection → one labeled contact sheet (~16× fewer vision tokens). no transcript needed. |
+| ✂️ | **`shots`**      | detect frame-accurate shot boundaries (cut points). returns an editable cut list — in/out per shot + keyframe. for montage/editing. |
+| 🥁 | **`cutpoints`**  | *when exactly to cut* for a montage. motion curve (cut on motion / into holds) × music beat grid (lengths snapped to beats). frame-accurate sub-clips. |
 | 🖼️ | **`frames`**     | sample N keyframes from any video. for visual stuff with no audio (comedy shorts, sports, silent demos). |
 | 🎧 | **`understand`** | watch the video for you. returns bullets + chapter timestamps + transcript. |
 | 📚 | **`search`**     | search across **every** video you've ever added. cross-video, semantic. |
@@ -125,7 +127,7 @@ URL  →  yt-dlp + ffmpeg  →  faster-whisper  →  30s text windows
                                                       ↓
                        cosine retrieval  +  on-demand ffmpeg keyframes
                                                       ↓
-                                      7 MCP tools  (stdio transport)
+                                      9 MCP tools  (stdio transport)
                                                       ↓
                                Claude Code  ·  Codex  ·  any MCP client
 ```
@@ -149,6 +151,8 @@ after first run: **fully offline.** no API keys, ever.
 ```bash
 videomemory skip https://youtu.be/X "where do they configure Tailwind?"
 videomemory look https://youtu.be/X "what's on screen when the error appears?"
+videomemory shots https://youtu.be/X            # frame-accurate cut list
+videomemory cutpoints clip.mp4 --music song.mp3 --beats 2   # beat+motion cut plan
 videomemory frames https://youtu.be/X --count 8
 videomemory understand https://youtu.be/X
 videomemory search "Postgres index tuning"
@@ -188,9 +192,11 @@ src/videomemory/
 ├── frames.py            # extract one or many keyframes
 ├── visual_index.py      # look(): the visual funnel (dedup → CLIP → retrieve → contact sheet)
 ├── clip_embed.py        # MobileCLIP-S2 image+text embedder (CLIP fallback)
+├── shots.py             # shots(): frame-accurate scene-boundary detection (ffmpeg)
+├── cutpoints.py         # cutpoints(): montage cut planning (motion curve × beat grid)
 ├── understand.py        # bullets + chapters (LLM if key present, else extractive)
 ├── library.py           # SQLite schema + CRUD + bundle export/import
-├── mcp_server.py        # stdio MCP, 7 tools
+├── mcp_server.py        # stdio MCP, 9 tools
 ├── youtube_history.py   # Google Takeout parser
 ├── deps.py              # `videomemory setup` wizard
 ├── embed.py             # bge-small wrapper

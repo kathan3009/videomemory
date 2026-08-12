@@ -1,6 +1,6 @@
 """MCP server exposing videomemory over stdio.
 
-7 tools: understand, skip, search, frames, look, add, list.
+9 tools: understand, skip, search, frames, look, shots, cutpoints, add, list.
 Frames are served as `videomemory://frames/<video_id>/<file>` resources so
 clients can fetch them on demand rather than receiving base64 blobs.
 """
@@ -15,11 +15,13 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 
 from videomemory.config import data_dir, frame_dir
+from videomemory.cutpoints import suggest_cuts as one_suggest_cuts
 from videomemory.frames import get_frames as multi_frames
 from videomemory.ingest import ingest
 from videomemory.library import list_videos as lib_list_videos
 from videomemory.search import search as cross_search
 from videomemory.search import skip as one_skip
+from videomemory.shots import detect_shots as one_detect_shots
 from videomemory.understand import understand as one_understand
 from videomemory.visual_index import analyze as visual_analyze
 
@@ -120,6 +122,47 @@ TOOL_DEFS: list[mt.Tool] = [
         },
     ),
     mt.Tool(
+        name="shots",
+        description=(
+            "Detect frame-accurate shot boundaries (cut points) in a video. Returns an editable "
+            "cut list: each shot's in/out timestamps, duration, a deep link to the in-point, and a "
+            "representative keyframe URI. Use this for editing/montage work — building an EDL, finding "
+            "where to cut, or counting distinct shots. Complements `look` (visual Q&A). Lower the "
+            "threshold to detect more (subtler) cuts; raise it for only hard cuts."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "YouTube URL or local file path."},
+                "threshold": {"type": "number", "description": "Scene score 0..1 (default 0.4). Lower = more cuts."},
+                "min_shot": {"type": "number", "description": "Merge shots shorter than this many seconds (default 0.6)."},
+            },
+            "required": ["url"],
+        },
+    ),
+    mt.Tool(
+        name="cutpoints",
+        description=(
+            "Suggest frame-accurate cut points for a take — the 'when exactly do I cut' tool for "
+            "montage assembly. Combines a per-frame motion curve (cut into stable framing, out on "
+            "motion) with a music beat grid (clip lengths snapped to whole beats so cuts land on the "
+            "beat). Returns sub-clips with in/out timestamps, duration in beats, deep links, and a "
+            "keyframe. Pass `music` (path to the soundtrack) for beat alignment; without it, falls "
+            "back to motion + an even target length. Use `look` first to pick WHICH take/moment, then "
+            "this for the exact frames."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "YouTube URL or local file path of the take."},
+                "music": {"type": "string", "description": "Path to the soundtrack for beat alignment (optional)."},
+                "beats_per_cut": {"type": "integer", "default": 2, "description": "Beats each cut should span (default 2)."},
+                "target_len": {"type": "number", "default": 2.0, "description": "Fallback clip length in seconds when no music (default 2.0)."},
+            },
+            "required": ["url"],
+        },
+    ),
+    mt.Tool(
         name="add",
         description="Add a video to the library without asking a question (just ingest + index).",
         inputSchema={
@@ -166,6 +209,23 @@ async def _handle(name: str, args: dict) -> dict:
             packing=args.get("packing", "auto"),
         )
         return a.model_dump(mode="json")
+
+    if name == "shots":
+        sl = await one_detect_shots(
+            args["url"],
+            threshold=args.get("threshold"),
+            min_shot=args.get("min_shot"),
+        )
+        return sl.model_dump(mode="json")
+
+    if name == "cutpoints":
+        cp = await one_suggest_cuts(
+            args["url"],
+            music=args.get("music"),
+            beats_per_cut=int(args.get("beats_per_cut", 2)),
+            target_len=float(args.get("target_len", 2.0)),
+        )
+        return cp.model_dump(mode="json")
 
     if name == "add":
         v = await ingest(args["url"])

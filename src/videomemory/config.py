@@ -66,3 +66,22 @@ def visual_dhash_threshold() -> int:
 def visual_semantic_dedup() -> float:
     """CLIP cosine above which two frames are semantic near-duplicates."""
     return float(os.environ.get("VIDEOMEMORY_VISUAL_SEMDEDUP", "0.92"))
+
+
+# ---- Shot detection knobs ----
+
+def scene_threshold() -> float:
+    """ffmpeg `scene` score (0..1) above which a frame starts a new shot."""
+    return float(os.environ.get("VIDEOMEMORY_SCENE_THRESHOLD", "0.4"))
+
+
+def min_shot_seconds() -> float:
+    """Shots shorter than this are merged into the neighbour (kills flicker cuts)."""
+    return float(os.environ.get("VIDEOMEMORY_MIN_SHOT_SECONDS", "0.6"))
+
+
+# ---- Cut-point knobs (montage assembly) ----
+
+def cut_motion_fps() -> float:
+    """Sampling rate of the per-frame motion curve (YDIF)."""
+    return float(os.environ.get("VIDEOMEMORY_CUT_MOTION_FPS", "10.0"))

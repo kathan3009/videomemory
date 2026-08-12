@@ -35,6 +35,8 @@ dependencies = [
     # Visual funnel: MobileCLIP-S2 joint image+text embeddings (falls back to
     # sentence-transformers CLIP if absent)
     "open-clip-torch>=2.24",
+    # Beat detection for cutpoints() montage assembly
+    "librosa>=0.10",
     # Transcription (CTranslate2, ARM-friendly)
     "faster-whisper>=1.0",
     # Torch is a transitive of sentence-transformers + faster-whisper

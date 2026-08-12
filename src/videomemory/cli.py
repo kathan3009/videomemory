@@ -168,6 +168,57 @@ def cmd_look(
     console.print(f"\n[dim]{a.guidance}[/dim]")
 
 
+@app.command(name="shots")
+def cmd_shots(
+    url: str = typer.Argument(...),
+    threshold: float = typer.Option(None, "--threshold", "-t", help="Scene score 0..1 (default 0.4)."),
+    min_shot: float = typer.Option(None, "--min-shot", help="Merge shots shorter than N seconds."),
+    json_out: bool = typer.Option(False, "--json"),
+) -> None:
+    """Detect frame-accurate shot boundaries (cut points) → editable cut list."""
+    import asyncio as _asyncio
+
+    from videomemory.shots import detect_shots
+
+    sl = _asyncio.run(detect_shots(url, threshold=threshold, min_shot=min_shot))
+    if json_out:
+        console.print_json(data=sl.model_dump(mode="json")); return
+    console.print(f"[bold]{sl.video_id}[/bold]  ·  {len(sl.shots)} shots  ·  {sl.duration:.1f}s  ·  thr={sl.threshold}")
+    t = Table(show_header=True, header_style="bold")
+    t.add_column("#", justify="right"); t.add_column("in"); t.add_column("out"); t.add_column("dur", justify="right")
+    for s in sl.shots:
+        t.add_row(str(s.index), s.start_human, s.end_human, f"{s.duration_seconds:.1f}s")
+    console.print(t)
+
+
+@app.command(name="cutpoints")
+def cmd_cutpoints(
+    url: str = typer.Argument(...),
+    music: str = typer.Option(None, "--music", "-m", help="Soundtrack path for beat alignment."),
+    beats_per_cut: int = typer.Option(2, "--beats", help="Beats each cut spans."),
+    target_len: float = typer.Option(2.0, "--target-len", help="Fallback clip length (no music)."),
+    json_out: bool = typer.Option(False, "--json"),
+) -> None:
+    """Suggest frame-accurate cut points (motion × beat) for montage assembly."""
+    import asyncio as _asyncio
+
+    from videomemory.cutpoints import suggest_cuts
+
+    cp = _asyncio.run(suggest_cuts(url, music=music, beats_per_cut=beats_per_cut, target_len=target_len))
+    if json_out:
+        console.print_json(data=cp.model_dump(mode="json")); return
+    bpm = f"{cp.bpm:.1f} BPM" if cp.bpm else "no beat grid"
+    console.print(f"[bold]{cp.video_id}[/bold]  ·  {len(cp.segments)} cuts  ·  {cp.duration:.1f}s  ·  {bpm}")
+    t = Table(show_header=True, header_style="bold")
+    t.add_column("#", justify="right"); t.add_column("in"); t.add_column("out")
+    t.add_column("dur", justify="right"); t.add_column("beats", justify="right"); t.add_column("in→out")
+    for s in cp.segments:
+        t.add_row(str(s.index), s.in_human, s.out_human, f"{s.duration_seconds:.2f}s",
+                  f"{s.beats:.0f}" if s.beats else "–", f"{s.in_kind}→{s.out_kind}")
+    console.print(t)
+    console.print(f"[dim]{cp.notes}[/dim]")
+
+
 @app.command(name="search")
 def cmd_search(
     query: str = typer.Argument(...),

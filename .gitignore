@@ -53,3 +53,8 @@ tests/fixtures/data/
 
 # Docker
 .docker-compose.override.yml
+
+# Stray personal files (not part of the project)
+Hyderabad_Couples_Trip_1-6_July_2026.md
+LxI_software_components.txt
+coursebooks/
