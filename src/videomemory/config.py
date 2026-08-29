@@ -1,13 +1,29 @@
-"""Tiny config. Single data dir, env-overridable."""
+"""Runtime configuration for local and tenant-isolated hosted operation."""
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
 
+from videomemory.tenant import current_tenant, tenant_data_dir
+
+
+def hosted_mode() -> bool:
+    return os.environ.get("VIDEOMEMORY_HOSTED", "0").lower() in {"1", "true", "yes"}
+
+
+def data_root() -> Path:
+    p = Path(os.environ.get("VIDEOMEMORY_DATA_ROOT", "/data/videomemory"))
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
 
 def data_dir() -> Path:
-    p = Path(os.environ.get("VIDEOMEMORY_DATA_DIR", str(Path.home() / ".videomemory")))
+    tenant = current_tenant()
+    if hosted_mode() or tenant is not None:
+        p = tenant_data_dir(data_root(), tenant)
+    else:
+        p = Path(os.environ.get("VIDEOMEMORY_DATA_DIR", str(Path.home() / ".videomemory")))
     p.mkdir(parents=True, exist_ok=True)
     (p / "videos").mkdir(parents=True, exist_ok=True)
     (p / "frames").mkdir(parents=True, exist_ok=True)
@@ -32,6 +48,14 @@ def frame_dir(video_id: str) -> Path:
 
 def max_video_seconds() -> int:
     return int(os.environ.get("VIDEOMEMORY_MAX_VIDEO_SECONDS", "3600"))  # 1h default
+
+
+def max_download_bytes() -> int:
+    return int(os.environ.get("VIDEOMEMORY_MAX_DOWNLOAD_BYTES", str(2 * 1024 * 1024 * 1024)))
+
+
+def download_timeout_seconds() -> int:
+    return int(os.environ.get("VIDEOMEMORY_DOWNLOAD_TIMEOUT_SECONDS", "900"))
 
 
 def whisper_model() -> str:

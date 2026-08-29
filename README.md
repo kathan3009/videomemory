@@ -2,13 +2,13 @@
 
 # 🎬 videomemory
 
-**give Claude Code & Codex eyes for video.**
-local. private. one MCP server, nine tools, zero API keys.
+**give Claude Code & Codex a real memory for video.**
+local-first or hosted. private. one MCP server, eleven tools.
 
 [![MIT](https://img.shields.io/badge/license-MIT-black?style=flat-square)](LICENSE)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-3776ab?style=flat-square)](https://www.python.org/)
 [![Tests](https://img.shields.io/badge/tests-27%20passing-34d399?style=flat-square)](tests/)
-[![No cloud](https://img.shields.io/badge/cloud-none-ff6b6b?style=flat-square)]()
+[![Hosted](https://img.shields.io/badge/hosted-ready-8ee7ff?style=flat-square)]()
 [![Stars](https://img.shields.io/github/stars/kathan3009/videomemory?style=flat-square&color=fbbf24)](https://github.com/kathan3009/videomemory)
 
 </div>
@@ -41,6 +41,16 @@ prefer to let Claude do it? clone the repo, open a Claude Code session in the di
 
 it'll find the skill in `.claude/skills/` and run setup itself.
 
+### hosted SaaS
+
+The same engine now includes an authenticated Streamable HTTP MCP endpoint, account dashboard,
+tenant-isolated storage, quotas, Razorpay subscriptions, guarded public-URL ingestion, and a
+living context graph. Deploy the backend with the included `Dockerfile` and `railway.toml`; deploy
+`src/videomemory/web` with OpenAI Sites. See `deploy.env.example` and
+`src/videomemory/web/env.example` for the required environment variables.
+
+Hosted MCP clients connect to `https://<api-host>/mcp` with a dashboard-generated bearer key.
+
 ---
 
 ## what you get
@@ -57,6 +67,8 @@ once installed, every Claude Code & Codex session gets these tools:
 | 🎧 | **`understand`** | watch the video for you. returns bullets + chapter timestamps + transcript. |
 | 📚 | **`search`**     | search across **every** video you've ever added. cross-video, semantic. |
 | ➕ | **`add`** / **`list`** | library management. |
+| ✣ | **`memory`** | recall the private context graph built from prior searches, videos, exact moments, and notes. |
+| ✎ | **`note`** | attach a durable note or branch a new version from an earlier interpretation. |
 
 frames come back as `videomemory://...` URIs that Claude fetches with native vision. no base64 blobs in your context window.
 
@@ -142,7 +154,7 @@ URL  →  yt-dlp + ffmpeg  →  faster-whisper  →  30s text windows
 | 🎬 | ffmpeg + yt-dlp        | tiny |
 | 🗄️ | sqlite                | – |
 
-after first run: **fully offline.** no API keys, ever.
+in local mode, after the first model download: **fully offline.** no API keys required.
 
 ---
 
@@ -196,7 +208,8 @@ src/videomemory/
 ├── cutpoints.py         # cutpoints(): montage cut planning (motion curve × beat grid)
 ├── understand.py        # bullets + chapters (LLM if key present, else extractive)
 ├── library.py           # SQLite schema + CRUD + bundle export/import
-├── mcp_server.py        # stdio MCP, 9 tools
+├── memory_graph.py      # tenant-private searches ↔ videos ↔ moments ↔ branched notes
+├── mcp_server.py        # stdio + hosted Streamable HTTP MCP, 11 tools
 ├── youtube_history.py   # Google Takeout parser
 ├── deps.py              # `videomemory setup` wizard
 ├── embed.py             # bge-small wrapper

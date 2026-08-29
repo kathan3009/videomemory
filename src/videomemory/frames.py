@@ -14,8 +14,8 @@ import asyncio
 import shutil
 from pathlib import Path
 
-from videomemory.config import frame_dir, video_dir
-from videomemory.ingest import _is_url, deep_link, fmt_time, ingest  # type: ignore
+from videomemory.config import download_timeout_seconds, frame_dir, max_download_bytes, video_dir
+from videomemory.ingest import _is_url, _proxy_args, deep_link, fmt_time, ingest  # type: ignore
 from videomemory.types import Frame
 
 MAX_FRAMES = 16
@@ -52,8 +52,8 @@ async def _ytdlp_image_dump(url: str, t: float, out: Path) -> bool:
         return False
     out.parent.mkdir(parents=True, exist_ok=True)
     ytdlp = await asyncio.create_subprocess_exec(
-        "yt-dlp", "-f", "best[height<=720]/best", "-q",
-        "--no-playlist", "-o", "-", url,
+        "yt-dlp", *_proxy_args(), "-f", "best[height<=720]/best", "-q",
+        "--no-playlist", "--max-filesize", str(max_download_bytes()), "-o", "-", url,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
     )
     ff = await asyncio.create_subprocess_exec(
@@ -84,13 +84,20 @@ async def _download_video_once(url: str, dest_dir: Path) -> Path | None:
         return dest
     proc = await asyncio.create_subprocess_exec(
         "yt-dlp",
+        *_proxy_args(),
         "-f", "best[height<=480][ext=mp4]/best[height<=720][ext=mp4]/best[ext=mp4]/best",
         "--no-playlist", "--no-mtime",
+        "--max-filesize", str(max_download_bytes()),
         "-o", str(dest),
         url,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
-    _, err = await proc.communicate()
+    try:
+        _, err = await asyncio.wait_for(proc.communicate(), timeout=download_timeout_seconds())
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+        return None
     if proc.returncode != 0:
         return None
     return dest if dest.exists() and dest.stat().st_size > 0 else None

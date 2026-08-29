@@ -9,6 +9,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import re
 import shutil
 from dataclasses import dataclass
@@ -18,6 +19,10 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from videomemory.config import (
+    data_dir,
+    download_timeout_seconds,
+    hosted_mode,
+    max_download_bytes,
     max_video_seconds,
     video_dir,
     whisper_model,
@@ -31,8 +36,14 @@ from videomemory.library import (
     upsert_video,
 )
 from videomemory.types import Video, Window
+from videomemory.url_safety import validate_public_url
 
 log = logging.getLogger(__name__)
+
+
+def _proxy_args() -> list[str]:
+    proxy = os.environ.get("VIDEOMEMORY_EGRESS_PROXY")
+    return ["--proxy", proxy] if proxy else []
 
 
 # ---------- video ID resolution ----------
@@ -131,21 +142,31 @@ async def _download_audio(url: str, dest_dir: Path) -> tuple[Path, str | None, f
     if not shutil.which("yt-dlp"):
         raise RuntimeError("yt-dlp not installed (run: videomemory setup)")
     dest_dir.mkdir(parents=True, exist_ok=True)
-    info_path = dest_dir / "info.json"
     args = [
         "yt-dlp",
+        *_proxy_args(),
         "-f", "bestaudio/best",
         "-x", "--audio-format", "wav",
         "--no-playlist", "--no-mtime",
+        "--max-filesize", str(max_download_bytes()),
         "--write-info-json",
         "--restrict-filenames",
         "-o", str(dest_dir / "source.%(ext)s"),
         url,
     ]
+    if max_video_seconds() > 0:
+        args[args.index("--write-info-json"):args.index("--write-info-json")] = [
+            "--match-filter", f"duration <= {max_video_seconds()}"
+        ]
     proc = await asyncio.create_subprocess_exec(
         *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
-    _, err = await proc.communicate()
+    try:
+        _, err = await asyncio.wait_for(proc.communicate(), timeout=download_timeout_seconds())
+    except TimeoutError as exc:
+        proc.kill()
+        await proc.wait()
+        raise RuntimeError("video download timed out") from exc
     if proc.returncode != 0:
         raise RuntimeError(f"yt-dlp failed: {err.decode(errors='replace')[:500]}")
     wav = next(iter(dest_dir.glob("source.wav")), None)
@@ -168,6 +189,17 @@ async def _download_audio(url: str, dest_dir: Path) -> tuple[Path, str | None, f
     if duration <= 0:
         duration = await _ffprobe_duration(wav)
     return wav, title, duration
+
+
+async def cache_public_audio(url: str) -> Path:
+    """Download a validated public audio/video URL as a tenant-scoped WAV asset."""
+    key = hashlib.sha256(url.encode()).hexdigest()[:20]
+    asset_dir = data_dir() / "assets" / "music" / key
+    wav = asset_dir / "source.wav"
+    if wav.exists() and wav.stat().st_size > 0:
+        return wav
+    wav, _, _ = await _download_audio(url, asset_dir)
+    return wav
 
 
 async def _ffmpeg_to_wav(src: Path, dst: Path, sample_rate: int = 16000) -> None:
@@ -301,6 +333,11 @@ def _bucket_into_windows(
 async def ingest(source: str, *, force: bool = False) -> Video:
     """Idempotent: returns the existing Video if already cached, else runs the pipeline."""
     cap = max_video_seconds()
+
+    if hosted_mode():
+        if not _is_url(source):
+            raise ValueError("hosted Videomemory accepts public video URLs; upload support is separate")
+        source = await validate_public_url(source)
 
     if not force:
         # If we already know about this source, short-circuit

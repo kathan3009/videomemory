@@ -1,6 +1,7 @@
 """MCP server exposing videomemory over stdio.
 
-9 tools: understand, skip, search, frames, look, shots, cutpoints, add, list.
+11 tools: understand, skip, search, frames, look, shots, cutpoints, add, list,
+memory, and note.
 Frames are served as `videomemory://frames/<video_id>/<file>` resources so
 clients can fetch them on demand rather than receiving base64 blobs.
 """
@@ -14,15 +15,20 @@ import mcp.types as mt
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 
-from videomemory.config import data_dir, frame_dir
+from videomemory.config import data_dir, frame_dir, hosted_mode
+from videomemory.control import record_usage, usage_summary
 from videomemory.cutpoints import suggest_cuts as one_suggest_cuts
 from videomemory.frames import get_frames as multi_frames
-from videomemory.ingest import ingest
+from videomemory.ingest import cache_public_audio, ingest, video_id_for
+from videomemory.library import get_video
 from videomemory.library import list_videos as lib_list_videos
+from videomemory.memory_graph import add_note, graph_snapshot, recall_context, record_tool_memory
 from videomemory.search import search as cross_search
 from videomemory.search import skip as one_skip
 from videomemory.shots import detect_shots as one_detect_shots
+from videomemory.tenant import current_tenant
 from videomemory.understand import understand as one_understand
+from videomemory.url_safety import validate_public_url
 from videomemory.visual_index import analyze as visual_analyze
 
 log = logging.getLogger(__name__)
@@ -155,7 +161,13 @@ TOOL_DEFS: list[mt.Tool] = [
             "type": "object",
             "properties": {
                 "url": {"type": "string", "description": "YouTube URL or local file path of the take."},
-                "music": {"type": "string", "description": "Path to the soundtrack for beat alignment (optional)."},
+                "music": {
+                    "type": "string",
+                    "description": (
+                        "Optional soundtrack path in local mode, or a public audio/video URL "
+                        "when using the hosted MCP endpoint."
+                    ),
+                },
                 "beats_per_cut": {"type": "integer", "default": 2, "description": "Beats each cut should span (default 2)."},
                 "target_len": {"type": "number", "default": 2.0, "description": "Fallback clip length in seconds when no music (default 2.0)."},
             },
@@ -176,10 +188,48 @@ TOOL_DEFS: list[mt.Tool] = [
         description="List videos currently in the library.",
         inputSchema={"type": "object", "properties": {}, "required": []},
     ),
+    mt.Tool(
+        name="memory",
+        description=(
+            "Recall the authenticated user's context brain: prior searches, videos, moments, "
+            "relationships, and notes. Pass a query for relevant context, or omit it for a recent graph snapshot."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Topic or context to recall (optional)."},
+                "limit": {"type": "integer", "default": 12},
+            },
+            "required": [],
+        },
+    ),
+    mt.Tool(
+        name="note",
+        description=(
+            "Attach a durable note to a video in memory. Pass parent_note_id to create a new "
+            "version or branch without overwriting the earlier thought."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "video_id": {"type": "string"},
+                "url": {"type": "string", "description": "Known video URL; used when video_id is omitted."},
+                "title": {"type": "string"},
+                "body": {"type": "string"},
+                "parent_note_id": {"type": "string"},
+            },
+            "required": ["title", "body"],
+        },
+    ),
 ]
 
 
 async def _handle(name: str, args: dict) -> dict:
+    if hosted_mode() and "url" in args:
+        args = {**args, "url": await validate_public_url(str(args["url"]))}
+    if hosted_mode() and name == "cutpoints" and args.get("music"):
+        music_url = await validate_public_url(str(args["music"]))
+        args = {**args, "music": str(await cache_public_audio(music_url))}
     if name == "understand":
         s = await one_understand(args["url"])
         return s.model_dump(mode="json")
@@ -234,28 +284,115 @@ async def _handle(name: str, args: dict) -> dict:
     if name == "list":
         return {"videos": [v.model_dump(mode="json") for v in lib_list_videos()]}
 
+    if name == "memory":
+        query = str(args.get("query", "")).strip()
+        limit = int(args.get("limit", 12))
+        return recall_context(query, limit) if query else graph_snapshot(limit=max(20, limit))
+
+    if name == "note":
+        video_id = str(args.get("video_id", "")).strip()
+        if not video_id and args.get("url"):
+            video_id = video_id_for(str(args["url"]))
+        if not video_id:
+            raise ValueError("video_id or url is required")
+        return add_note(
+            video_id,
+            str(args.get("title", "")),
+            str(args.get("body", "")),
+            str(args["parent_note_id"]) if args.get("parent_note_id") else None,
+        )
+
     raise ValueError(f"unknown tool: {name}")
 
 
 def build_server() -> Server:
-    server: Server = Server("videomemory")
+    server: Server = Server(
+        "videomemory",
+        version="1.0.0",
+        website_url="https://videomemory.ai",
+        instructions=(
+            "Videomemory gives agents a private searchable memory for video. Use skip for exact "
+            "answers, look for visual questions, understand for a whole-video brief, and search "
+            "for the authenticated user's library. Ingestion can take time; never invent a result."
+        ),
+    )
 
     @server.list_tools()
     async def _list_tools() -> list[mt.Tool]:
         return TOOL_DEFS
 
     @server.call_tool()
-    async def _call_tool(name: str, arguments: dict) -> list[mt.TextContent]:
+    async def _call_tool(name: str, arguments: dict) -> list[mt.ContentBlock]:
+        tenant = current_tenant()
+        source = str((arguments or {}).get("url", ""))
+        source_id = video_id_for(source) if source else None
+        was_indexed = bool(source_id and get_video(source_id))
         try:
+            if tenant and hosted_mode() and source_id and not was_indexed:
+                usage = usage_summary(tenant)
+                if usage["totals"].get("videos", 0) >= usage["limits"]["videos"]:
+                    raise ValueError("monthly video limit reached")
+                if usage["totals"].get("minutes", 0) >= usage["limits"]["minutes"]:
+                    raise ValueError("monthly indexed-minute limit reached")
             result = await _handle(name, arguments or {})
         except Exception as exc:
             log.exception("tool %s failed", name)
             result = {"error": str(exc)}
-        return [mt.TextContent(type="text", text=json.dumps(result, indent=2))]
+        if tenant and hosted_mode():
+            record_usage(tenant, "mcp_calls", 1, {"tool": name})
+            indexed = get_video(source_id) if source_id else None
+            if indexed and not was_indexed:
+                record_usage(tenant, "videos", 1, {"video_id": indexed.video_id, "via": "mcp"})
+                record_usage(
+                    tenant,
+                    "minutes",
+                    max(0, indexed.duration / 60),
+                    {"video_id": indexed.video_id, "via": "mcp"},
+                )
+        record_tool_memory(name, arguments or {}, result)
+        blocks: list[mt.ContentBlock] = [mt.TextContent(type="text", text=json.dumps(result, indent=2))]
+        seen: set[str] = set()
+
+        def add_frame_links(value: object) -> None:
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    if key.endswith("uri") and isinstance(item, str) and item.startswith("videomemory://frames/"):
+                        if item not in seen:
+                            seen.add(item)
+                            blocks.append(
+                                mt.ResourceLink(
+                                    type="resource_link",
+                                    name=item.rsplit("/", 1)[-1],
+                                    title="Videomemory frame",
+                                    uri=item,
+                                    mimeType="image/jpeg",
+                                    description="A tenant-private video frame returned by this tool call.",
+                                )
+                            )
+                    else:
+                        add_frame_links(item)
+            elif isinstance(value, list):
+                for item in value:
+                    add_frame_links(item)
+
+        add_frame_links(result)
+        return blocks
 
     @server.list_resources()
     async def _list_resources() -> list[mt.Resource]:
         return []
+
+    @server.list_resource_templates()
+    async def _list_resource_templates() -> list[mt.ResourceTemplate]:
+        return [
+            mt.ResourceTemplate(
+                name="video-frame",
+                title="Videomemory frame",
+                uriTemplate="videomemory://frames/{video_id}/{filename}",
+                description="A frame generated for a video in the authenticated tenant's library.",
+                mimeType="image/jpeg",
+            )
+        ]
 
     @server.read_resource()
     async def _read_resource(uri: str) -> str | bytes:

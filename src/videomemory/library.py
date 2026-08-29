@@ -53,6 +53,56 @@ CREATE TABLE IF NOT EXISTS visual_frames (
     vec        BLOB NOT NULL            -- float32 CLIP image embedding
 );
 CREATE INDEX IF NOT EXISTS idx_vframes_video ON visual_frames(video_id);
+
+-- Tenant-private property graph: a lightweight Neo4j-shaped context brain.
+CREATE TABLE IF NOT EXISTS memory_nodes (
+    node_id TEXT PRIMARY KEY,
+    node_type TEXT NOT NULL,
+    label TEXT NOT NULL,
+    properties_json TEXT NOT NULL DEFAULT '{}',
+    access_count INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memory_nodes_type_updated ON memory_nodes(node_type, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS memory_edges (
+    edge_id TEXT PRIMARY KEY,
+    source_id TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    relation TEXT NOT NULL,
+    weight REAL NOT NULL DEFAULT 1,
+    properties_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(source_id, target_id, relation)
+);
+CREATE INDEX IF NOT EXISTS idx_memory_edges_source ON memory_edges(source_id);
+CREATE INDEX IF NOT EXISTS idx_memory_edges_target ON memory_edges(target_id);
+
+CREATE TABLE IF NOT EXISTS memory_events (
+    event_id TEXT PRIMARY KEY,
+    tool TEXT NOT NULL,
+    query TEXT,
+    video_id TEXT,
+    moment_seconds REAL,
+    result_summary TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memory_events_created ON memory_events(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS video_notes (
+    note_id TEXT PRIMARY KEY,
+    video_id TEXT NOT NULL,
+    parent_note_id TEXT,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_video_notes_video ON video_notes(video_id, created_at DESC);
+
 """
 
 

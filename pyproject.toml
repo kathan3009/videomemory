@@ -43,6 +43,8 @@ dependencies = [
     "torch>=2.3",
     # MCP
     "mcp>=1.0",
+    # Hosted SaaS API and Streamable HTTP process
+    "uvicorn[standard]>=0.35,<1",
 ]
 
 [project.optional-dependencies]

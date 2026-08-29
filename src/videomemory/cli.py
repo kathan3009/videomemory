@@ -11,6 +11,7 @@
   videomemory export <path>    # export library bundle
   videomemory import <path>    # import library bundle (Watch Club)
   videomemory mcp serve        # stdio MCP server
+  videomemory mcp serve-http   # hosted Streamable HTTP MCP + web API
 """
 
 from __future__ import annotations
@@ -322,6 +323,18 @@ def mcp_serve(
     from videomemory.mcp_server import serve_stdio
 
     asyncio.run(serve_stdio())
+
+
+@mcp_app.command("serve-http")
+def mcp_serve_http(
+    host: str = typer.Option("0.0.0.0", "--host"),
+    port: int = typer.Option(8080, "--port", envvar="PORT"),
+) -> None:
+    """Start the authenticated hosted API and Streamable HTTP MCP server."""
+    os.environ["VIDEOMEMORY_HOSTED"] = "1"
+    import uvicorn
+
+    uvicorn.run("videomemory.saas_api:app", host=host, port=port, proxy_headers=True)
 
 
 def main() -> None:
