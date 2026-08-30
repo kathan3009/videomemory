@@ -87,7 +87,7 @@ async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> N
 async def _open_public_socket(
     host: str, port: int, *, tls: bool = False
 ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
-    addresses = await resolve_public_addresses(host, port)
+    addresses = _ordered_addresses(await resolve_public_addresses(host, port))
     last_error: Exception | None = None
     for address in addresses:
         try:
@@ -107,6 +107,16 @@ async def _open_public_socket(
 
 def _authority(host: str, port: int) -> str:
     return f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+
+
+def _ordered_addresses(addresses: list[str]) -> list[str]:
+    prefer_ipv6 = os.environ.get("VIDEOMEMORY_PREFER_IPV6", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    return sorted(addresses, key=lambda address: (":" not in address, address)) if prefer_ipv6 else addresses
 
 
 async def _proxy_connect(
@@ -146,7 +156,7 @@ async def _proxy_connect(
 
 
 async def _connect_public(host: str, port: int) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
-    addresses = await resolve_public_addresses(host, port)
+    addresses = _ordered_addresses(await resolve_public_addresses(host, port))
     proxy = _upstream_proxy()
     if proxy is None:
         return await _open_public_socket(host, port)

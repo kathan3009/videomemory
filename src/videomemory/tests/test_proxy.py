@@ -6,7 +6,7 @@ import pytest
 
 from videomemory import outbound_proxy
 from videomemory.ingest import _download_error, _network_args
-from videomemory.outbound_proxy import _authority, _upstream_proxy
+from videomemory.outbound_proxy import _authority, _ordered_addresses, _upstream_proxy
 
 
 def test_upstream_proxy_parses_credentials_without_retaining_url(monkeypatch):
@@ -40,6 +40,14 @@ def test_upstream_proxy_rejects_unsupported_urls(monkeypatch, value):
 def test_proxy_authority_brackets_ipv6():
     assert _authority("203.0.113.7", 443) == "203.0.113.7:443"
     assert _authority("2001:db8::7", 443) == "[2001:db8::7]:443"
+
+
+def test_ipv6_can_be_preferred_without_disabling_ipv4(monkeypatch):
+    addresses = ["203.0.113.7", "2001:db8::7", "198.51.100.2"]
+    assert _ordered_addresses(addresses) == addresses
+
+    monkeypatch.setenv("VIDEOMEMORY_PREFER_IPV6", "1")
+    assert _ordered_addresses(addresses) == ["2001:db8::7", "198.51.100.2", "203.0.113.7"]
 
 
 def test_guard_chains_to_validated_ip_not_original_hostname(monkeypatch):
