@@ -60,11 +60,13 @@ def _network_args() -> list[str]:
 
 
 def _download_error(stderr: bytes) -> RuntimeError:
-    detail = stderr.decode(errors="replace")[:500]
-    if "HTTP Error 429" in detail or "Too Many Requests" in detail:
+    stderr_text = stderr.decode(errors="replace")
+    if "HTTP Error 429" in stderr_text or "Too Many Requests" in stderr_text:
         return RuntimeError(
             "YouTube rate-limited hosted ingestion. Upload the media file or configure a dedicated egress proxy."
         )
+    # Warnings can be long enough to hide the final actionable yt-dlp error.
+    detail = stderr_text[-500:]
     return RuntimeError(f"yt-dlp failed: {detail}")
 
 

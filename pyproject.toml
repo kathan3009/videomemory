@@ -24,7 +24,8 @@ dependencies = [
     # Storage
     "aiosqlite>=0.20",
     # Video sources
-    "yt-dlp>=2025.4.30",
+    # YouTube requires yt-dlp's EJS challenge solver and a supported JS runtime.
+    "yt-dlp[default,deno]>=2026.8.19",
     # Numerics + images
     "numpy>=1.26,<2.3",
     "pillow>=10.3",

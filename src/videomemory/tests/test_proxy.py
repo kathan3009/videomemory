@@ -83,3 +83,22 @@ def test_ytdlp_network_policy_and_rate_limit_error():
     assert str(error) == (
         "YouTube rate-limited hosted ingestion. Upload the media file or configure a dedicated egress proxy."
     )
+
+
+def test_rate_limit_error_is_not_hidden_by_long_warnings():
+    stderr = ("WARNING: optional runtime detail\n" * 40).encode()
+    stderr += b"ERROR: HTTP Error 429: Too Many Requests"
+
+    error = _download_error(stderr)
+
+    assert str(error) == (
+        "YouTube rate-limited hosted ingestion. Upload the media file or configure a dedicated egress proxy."
+    )
+
+
+def test_download_error_keeps_the_final_actionable_detail():
+    stderr = ("WARNING: noisy detail\n" * 40).encode() + b"ERROR: final extractor failure"
+
+    error = _download_error(stderr)
+
+    assert "ERROR: final extractor failure" in str(error)
