@@ -12,7 +12,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     VIDEOMEMORY_DATA_ROOT=/data/videomemory
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg libsndfile1 ca-certificates \
+    && apt-get install -y --no-install-recommends ffmpeg libsndfile1 ca-certificates gosu \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir uv==0.11.11
 
@@ -26,7 +26,6 @@ RUN groupadd --system videomemory \
     && useradd --system --gid videomemory --home-dir /app videomemory \
     && mkdir -p /data/videomemory /models \
     && chown -R videomemory:videomemory /data /models
-USER videomemory
 EXPOSE 8080
 
-CMD ["sh", "-c", "videomemory mcp serve-http --host 0.0.0.0 --port ${PORT:-8080}"]
+CMD ["sh", "-c", "chown videomemory:videomemory /data && mkdir -p /data/videomemory && chown videomemory:videomemory /data/videomemory && exec gosu videomemory videomemory mcp serve-http --host 0.0.0.0 --port ${PORT:-8080}"]
