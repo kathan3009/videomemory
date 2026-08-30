@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 
 import pytest
 from mcp import ClientSession, StdioServerParameters
@@ -17,8 +18,8 @@ async def test_stdio_lists_tools_and_calls_each(tutorial_ingested):
     env["VIDEOMEMORY_DATA_DIR"] = data_dir
 
     params = StdioServerParameters(
-        command="uv",
-        args=["run", "videomemory", "mcp", "serve"],
+        command=sys.executable,
+        args=["-c", "from videomemory.cli import app; app()", "mcp", "serve"],
         env=env,
     )
 
@@ -31,6 +32,7 @@ async def test_stdio_lists_tools_and_calls_each(tutorial_ingested):
             assert names == {
                 "understand", "skip", "search", "frames", "look", "shots", "cutpoints",
                 "add", "list", "memory", "note",
+                "remember_artifact", "artifact_memory",
             }
 
             lv = await session.call_tool("list", {})

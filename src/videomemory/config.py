@@ -54,6 +54,29 @@ def max_download_bytes() -> int:
     return int(os.environ.get("VIDEOMEMORY_MAX_DOWNLOAD_BYTES", str(2 * 1024 * 1024 * 1024)))
 
 
+def max_upload_bytes() -> int:
+    """Maximum accepted browser upload size (100 MiB beta default)."""
+    return int(os.environ.get("VIDEOMEMORY_MAX_UPLOAD_BYTES", str(100 * 1024 * 1024)))
+
+
+def max_tenant_bytes() -> int:
+    """Hard ceiling for one tenant's complete on-disk workspace."""
+    return int(os.environ.get("VIDEOMEMORY_MAX_TENANT_BYTES", str(350 * 1024 * 1024)))
+
+
+def max_global_bytes() -> int:
+    """Emergency ceiling for all persistent tenant data on a single-node beta."""
+    return int(os.environ.get("VIDEOMEMORY_MAX_GLOBAL_BYTES", str(450 * 1024 * 1024)))
+
+
+def max_active_jobs() -> int:
+    return int(os.environ.get("VIDEOMEMORY_MAX_ACTIVE_JOBS", "4"))
+
+
+def media_process_timeout_seconds() -> int:
+    return int(os.environ.get("VIDEOMEMORY_MEDIA_PROCESS_TIMEOUT_SECONDS", "300"))
+
+
 def download_timeout_seconds() -> int:
     return int(os.environ.get("VIDEOMEMORY_DOWNLOAD_TIMEOUT_SECONDS", "900"))
 

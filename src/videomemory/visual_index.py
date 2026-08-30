@@ -29,6 +29,8 @@ import numpy as np
 
 from videomemory import clip_embed
 from videomemory.config import (
+    hosted_mode,
+    max_video_seconds,
     video_dir,
     visual_candidate_fps,
     visual_candidate_px,
@@ -47,6 +49,7 @@ from videomemory.library import (
     has_visual_frames,
     insert_visual_frames,
     iter_visual_frames,
+    mark_index_ready,
     upsert_video,
 )
 from videomemory.types import Video, VisualAnalysis, VisualFrame
@@ -114,6 +117,19 @@ async def _ensure_video(url: str) -> tuple[str, str, Path, float]:
 
     existing = get_video(vid)
     duration = existing.duration if existing and existing.duration > 0 else await _ffprobe_duration(local)
+    if hosted_mode():
+        cap = max_video_seconds()
+        if cap > 0 and duration > cap:
+            raise ValueError(f"video exceeds the {cap} second hosted limit")
+        from videomemory.control import usage_summary
+        from videomemory.tenant import current_tenant
+
+        tenant = current_tenant()
+        if tenant:
+            usage = usage_summary(tenant)
+            remaining = max(0.0, usage["limits"]["minutes"] - usage["totals"].get("minutes", 0))
+            if duration > remaining * 60:
+                raise ValueError("video exceeds the remaining monthly indexed-minutes allowance")
     if existing is None:
         upsert_video(
             Video(
@@ -153,6 +169,7 @@ async def _dump_candidates(local: Path, out_dir: Path, fps: float, px: int) -> l
         "-i", str(local),
         "-vf", f"{select},{scale},showinfo",
         "-vsync", "vfr", "-q:v", "4",
+        "-frames:v", str(MAX_CANDIDATES),
         str(out_dir / "cand_%06d.jpg"),
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
@@ -203,24 +220,32 @@ async def build_index(url: str, *, force: bool = False) -> dict:
         last_hash, last_mean = h, mean
 
     # Stage 2 — CLIP embed survivors (the one moderately expensive local step).
-    vecs = clip_embed.embed_images([p for _, p, _ in kept])
+    vecs: list = []
+    for start in range(0, len(kept), 32):
+        batch = [path for _, path, _ in kept[start : start + 32]]
+        vecs.extend(await asyncio.to_thread(clip_embed.embed_images, batch))
 
     # Stage 3 — semantic dedup vs all kept (cosine > threshold = same meaning).
     sem_thr = visual_semantic_dedup()
     rows: list[dict] = []
-    kept_vecs: list[np.ndarray] = []
+    semantic_matrix: np.ndarray | None = None
+    semantic_count = 0
     for (t, _path, dhash), v in zip(kept, vecs, strict=False):
         if v is None:
             continue
         arr = np.asarray(v, dtype=np.float32)
-        if kept_vecs:
-            sims = np.stack(kept_vecs) @ arr
+        if semantic_matrix is None:
+            semantic_matrix = np.empty((len(vecs), len(arr)), dtype=np.float32)
+        if semantic_count:
+            sims = semantic_matrix[:semantic_count] @ arr
             if float(sims.max()) > sem_thr:
                 continue
-        kept_vecs.append(arr)
+        semantic_matrix[semantic_count] = arr
+        semantic_count += 1
         rows.append({"t": t, "dhash": dhash, "vec": v})
 
     insert_visual_frames(vid, model, rows)
+    mark_index_ready(vid, "visual")
     shutil.rmtree(cand_dir, ignore_errors=True)  # candidates were only for embedding
     return {"video_id": vid, "duration": duration, "indexed": len(rows), "candidates": n_candidates, "model": model}
 

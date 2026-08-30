@@ -1,20 +1,23 @@
 """MCP server exposing videomemory over stdio.
 
-11 tools: understand, skip, search, frames, look, shots, cutpoints, add, list,
-memory, and note.
+13 tools: video understanding, durable video memory, and organization-wide artifact memory.
 Frames are served as `videomemory://frames/<video_id>/<file>` resources so
 clients can fetch them on demand rather than receiving base64 blobs.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import os
+import re
 
 import mcp.types as mt
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 
+from videomemory.artifact_memory import artifact_memory, remember_artifact
 from videomemory.config import data_dir, frame_dir, hosted_mode
 from videomemory.control import record_usage, usage_summary
 from videomemory.cutpoints import suggest_cuts as one_suggest_cuts
@@ -32,6 +35,8 @@ from videomemory.url_safety import validate_public_url
 from videomemory.visual_index import analyze as visual_analyze
 
 log = logging.getLogger(__name__)
+_expensive_tools = {"understand", "skip", "frames", "look", "shots", "cutpoints", "add"}
+_tool_semaphore = asyncio.Semaphore(max(1, int(os.environ.get("VIDEOMEMORY_MCP_CONCURRENCY", "2"))))
 
 TOOL_DEFS: list[mt.Tool] = [
     mt.Tool(
@@ -221,6 +226,47 @@ TOOL_DEFS: list[mt.Tool] = [
             "required": ["title", "body"],
         },
     ),
+    mt.Tool(
+        name="remember_artifact",
+        description=(
+            "Remember an agent-created artifact: where it lives, what it is, how to access it, "
+            "its useful content, and its project/parent. The same locator creates a new version "
+            "when content changes."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "locator": {"type": "string", "description": "File path, repository URL, document URL, or durable identifier."},
+                "kind": {"type": "string", "enum": ["code", "document", "image", "video", "audio", "dataset", "design", "report", "other"]},
+                "access_instructions": {"type": "string"},
+                "summary": {"type": "string"},
+                "content": {"type": "string", "description": "Optional searchable text or compact artifact body (max 200k characters)."},
+                "project": {"type": "string"},
+                "agent": {"type": "string"},
+                "parent_artifact_id": {"type": "string"},
+                "metadata": {"type": "object", "additionalProperties": True},
+            },
+            "required": ["title", "locator"],
+        },
+    ),
+    mt.Tool(
+        name="artifact_memory",
+        description=(
+            "Recall artifacts by title, content, project, or locator. Pass artifact_id to retrieve "
+            "its version history and access context."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "artifact_id": {"type": "string"},
+                "limit": {"type": "integer", "default": 20},
+                "include_content": {"type": "boolean", "default": False},
+            },
+            "required": [],
+        },
+    ),
 ]
 
 
@@ -302,6 +348,28 @@ async def _handle(name: str, args: dict) -> dict:
             str(args["parent_note_id"]) if args.get("parent_note_id") else None,
         )
 
+    if name == "remember_artifact":
+        return remember_artifact(
+            title=str(args.get("title", "")),
+            locator=str(args.get("locator", "")),
+            kind=str(args.get("kind", "other")),
+            access_instructions=str(args.get("access_instructions", "")),
+            summary=str(args.get("summary", "")),
+            content=str(args.get("content", "")),
+            project=str(args.get("project", "")),
+            agent=str(args.get("agent", "")),
+            parent_artifact_id=str(args["parent_artifact_id"]) if args.get("parent_artifact_id") else None,
+            metadata=args.get("metadata") if isinstance(args.get("metadata"), dict) else {},
+        )
+
+    if name == "artifact_memory":
+        return artifact_memory(
+            str(args.get("query", "")),
+            artifact_id=str(args["artifact_id"]) if args.get("artifact_id") else None,
+            limit=int(args.get("limit", 20)),
+            include_content=bool(args.get("include_content", False)),
+        )
+
     raise ValueError(f"unknown tool: {name}")
 
 
@@ -309,11 +377,12 @@ def build_server() -> Server:
     server: Server = Server(
         "videomemory",
         version="1.0.0",
-        website_url="https://videomemory.ai",
+        website_url=os.environ.get("VIDEOMEMORY_WEBSITE_URL", "https://github.com/kathan3009/videomemory"),
         instructions=(
             "Videomemory gives agents a private searchable memory for video. Use skip for exact "
             "answers, look for visual questions, understand for a whole-video brief, and search "
-            "for the authenticated user's library. Ingestion can take time; never invent a result."
+            "for the authenticated user's library. Call remember_artifact after creating durable "
+            "work, and artifact_memory before recreating it. Ingestion can take time; never invent a result."
         ),
     )
 
@@ -328,13 +397,20 @@ def build_server() -> Server:
         source_id = video_id_for(source) if source else None
         was_indexed = bool(source_id and get_video(source_id))
         try:
-            if tenant and hosted_mode() and source_id and not was_indexed:
+            if tenant and hosted_mode():
                 usage = usage_summary(tenant)
-                if usage["totals"].get("videos", 0) >= usage["limits"]["videos"]:
-                    raise ValueError("monthly video limit reached")
-                if usage["totals"].get("minutes", 0) >= usage["limits"]["minutes"]:
-                    raise ValueError("monthly indexed-minute limit reached")
-            result = await _handle(name, arguments or {})
+                if usage["totals"].get("mcp_calls", 0) >= usage["limits"]["mcp_calls"]:
+                    raise ValueError("monthly MCP call limit reached")
+                if source_id and not was_indexed:
+                    if usage["totals"].get("videos", 0) >= usage["limits"]["videos"]:
+                        raise ValueError("monthly video limit reached")
+                    if usage["totals"].get("minutes", 0) >= usage["limits"]["minutes"]:
+                        raise ValueError("monthly indexed-minute limit reached")
+            if name in _expensive_tools:
+                async with _tool_semaphore:
+                    result = await _handle(name, arguments or {})
+            else:
+                result = await _handle(name, arguments or {})
         except Exception as exc:
             log.exception("tool %s failed", name)
             result = {"error": str(exc)}
@@ -404,8 +480,13 @@ def build_server() -> Server:
             video_id, fname = rest.split("/", 1)
         except ValueError as exc:
             raise ValueError(f"malformed frame URI: {uri}") from exc
-        path = frame_dir(video_id) / fname
-        if not path.exists():
+        if not re.fullmatch(r"[A-Za-z0-9_-]{3,96}", video_id):
+            raise ValueError(f"malformed frame URI: {uri}")
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,160}\.(?:jpe?g|png)", fname, re.IGNORECASE):
+            raise ValueError(f"malformed frame URI: {uri}")
+        base = frame_dir(video_id).resolve()
+        path = (base / fname).resolve()
+        if not path.is_relative_to(base) or not path.is_file():
             raise FileNotFoundError(str(path))
         return path.read_bytes()
 

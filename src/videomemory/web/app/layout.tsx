@@ -6,7 +6,9 @@ const sans = Geist({ variable: '--font-sans', subsets: ['latin'] });
 const mono = Geist_Mono({ variable: '--font-mono', subsets: ['latin'] });
 
 export const metadata: Metadata = {
-  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL || 'https://videomemory.ai'),
+  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'),
+  applicationName: 'VideoMemory',
+  alternates: { canonical: '/' },
   title: 'Videomemory — Every video, immediately useful',
   description: 'A private, searchable video memory for Claude, Codex, and every MCP-compatible agent.',
   icons: { icon: '/og.png' },

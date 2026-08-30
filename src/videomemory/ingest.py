@@ -24,6 +24,7 @@ from videomemory.config import (
     hosted_mode,
     max_download_bytes,
     max_video_seconds,
+    media_process_timeout_seconds,
     video_dir,
     whisper_model,
     window_seconds,
@@ -33,6 +34,8 @@ from videomemory.library import (
     get_video,
     has_windows,
     insert_windows,
+    is_index_ready,
+    mark_index_ready,
     upsert_video,
 )
 from videomemory.types import Video, Window
@@ -127,7 +130,12 @@ async def _ffprobe_duration(path: Path) -> float:
         "-of", "default=noprint_wrappers=1:nokey=1", str(path),
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
-    out, _ = await proc.communicate()
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=min(30, media_process_timeout_seconds()))
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+        return 0.0
     try:
         return float(out.decode().strip() or 0)
     except ValueError:
@@ -156,7 +164,10 @@ async def _download_audio(url: str, dest_dir: Path) -> tuple[Path, str | None, f
     ]
     if max_video_seconds() > 0:
         args[args.index("--write-info-json"):args.index("--write-info-json")] = [
-            "--match-filter", f"duration <= {max_video_seconds()}"
+            # `<=?` accepts direct media URLs whose generic extractor cannot
+            # discover duration until after download. We probe and enforce the
+            # same limit below before the asset is accepted.
+            "--match-filter", f"duration <=? {max_video_seconds()}"
         ]
     proc = await asyncio.create_subprocess_exec(
         *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
@@ -188,6 +199,9 @@ async def _download_audio(url: str, dest_dir: Path) -> tuple[Path, str | None, f
             pass
     if duration <= 0:
         duration = await _ffprobe_duration(wav)
+    if max_video_seconds() > 0 and duration > max_video_seconds():
+        wav.unlink(missing_ok=True)
+        raise RuntimeError(f"video exceeds the {max_video_seconds()} second hosted limit")
     return wav, title, duration
 
 
@@ -207,11 +221,18 @@ async def _ffmpeg_to_wav(src: Path, dst: Path, sample_rate: int = 16000) -> None
         raise RuntimeError("ffmpeg not installed")
     proc = await asyncio.create_subprocess_exec(
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-protocol_whitelist", "file,pipe,crypto,data",
         "-i", str(src), "-vn", "-ac", "1", "-ar", str(sample_rate),
         "-f", "wav", str(dst),
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
-    _, err = await proc.communicate()
+    try:
+        _, err = await asyncio.wait_for(proc.communicate(), timeout=media_process_timeout_seconds())
+    except TimeoutError as exc:
+        proc.kill()
+        await proc.wait()
+        dst.unlink(missing_ok=True)
+        raise RuntimeError("media conversion timed out") from exc
     if proc.returncode == 0:
         return
     err_text = err.decode(errors="replace")
@@ -258,7 +279,8 @@ async def resolve_source(source: str) -> Source:
     duration = await _ffprobe_duration(p)
     if duration <= 0:
         duration = await _ffprobe_duration(wav)
-    title = p.stem
+    display_name = p.with_suffix(".name")
+    title = display_name.read_text().strip()[:240] if display_name.exists() else p.stem
     (vdir / "title.txt").write_text(title)
     (vdir / "original_path.txt").write_text(str(p))
     return Source(vid, source, wav, title, duration)
@@ -330,25 +352,46 @@ def _bucket_into_windows(
 # ---------- top-level ----------
 
 
-async def ingest(source: str, *, force: bool = False) -> Video:
+async def ingest(
+    source: str,
+    *,
+    force: bool = False,
+    trusted_upload: bool = False,
+    max_duration_seconds: float | None = None,
+) -> Video:
     """Idempotent: returns the existing Video if already cached, else runs the pipeline."""
     cap = max_video_seconds()
 
     if hosted_mode():
-        if not _is_url(source):
+        if not _is_url(source) and not trusted_upload:
             raise ValueError("hosted Videomemory accepts public video URLs; upload support is separate")
-        source = await validate_public_url(source)
+        if _is_url(source):
+            source = await validate_public_url(source)
+        if max_duration_seconds is None:
+            from videomemory.control import usage_summary
+            from videomemory.tenant import current_tenant
+
+            tenant = current_tenant()
+            if tenant:
+                usage = usage_summary(tenant)
+                remaining = usage["limits"]["minutes"] - usage["totals"].get("minutes", 0)
+                max_duration_seconds = max(0.0, remaining * 60)
 
     if not force:
         # If we already know about this source, short-circuit
         pre_id = video_id_for(source) if _is_url(source) else None
         if pre_id:
             existing = get_video(pre_id)
-            if existing and has_windows(pre_id):
+            if existing and (is_index_ready(pre_id) or has_windows(pre_id)):
                 return existing
 
     src = await resolve_source(source)
-    if cap > 0 and src.duration > cap:
+    effective_cap = float(cap) if cap > 0 else float("inf")
+    if max_duration_seconds is not None:
+        effective_cap = min(effective_cap, max(0.0, max_duration_seconds))
+    if src.duration > effective_cap:
+        if max_duration_seconds is not None and effective_cap == max(0.0, max_duration_seconds):
+            raise ValueError("video exceeds the remaining monthly indexed-minutes allowance")
         raise ValueError(
             f"video too long: {src.duration:.0f}s > limit {cap}s "
             "(set VIDEOMEMORY_MAX_VIDEO_SECONDS to change)"
@@ -363,7 +406,7 @@ async def ingest(source: str, *, force: bool = False) -> Video:
         file_path=str(src.local_audio),
     )
     upsert_video(v)
-    if not force and has_windows(src.video_id):
+    if not force and (is_index_ready(src.video_id) or has_windows(src.video_id)):
         return v
 
     # Transcribe + bucket + embed
@@ -373,6 +416,7 @@ async def ingest(source: str, *, force: bool = False) -> Video:
     if windows:
         vecs = await asyncio.to_thread(embed_texts, [w.text for w in windows])
         insert_windows(windows, vecs)
+    mark_index_ready(src.video_id, "transcript")
     log.info("ingested %s windows=%d", src.video_id, len(windows))
     return v
 

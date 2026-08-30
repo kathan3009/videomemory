@@ -75,7 +75,7 @@ markers = [
     "network: requires internet (YouTube download)",
     "slow: takes more than 30s",
 ]
-testpaths = ["tests"]
+testpaths = ["tests", "src/videomemory/tests"]
 filterwarnings = [
     "ignore::DeprecationWarning",
     "ignore::PendingDeprecationWarning",

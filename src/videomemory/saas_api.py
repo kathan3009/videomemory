@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import hashlib
 import json
 import os
+import re
+import shutil
 import time
+import uuid
 from collections import defaultdict, deque
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
@@ -20,6 +26,8 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import BaseRoute, Match, Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from videomemory.artifact_memory import artifact_memory as recall_artifacts
+from videomemory.artifact_memory import remember_artifact
 from videomemory.billing import (
     BillingUnavailable,
     cancel_subscription,
@@ -29,8 +37,20 @@ from videomemory.billing import (
     verify_checkout_signature,
     verify_webhook,
 )
-from videomemory.config import hosted_mode
+from videomemory.config import (
+    data_dir,
+    data_root,
+    frame_dir,
+    hosted_mode,
+    max_active_jobs,
+    max_global_bytes,
+    max_tenant_bytes,
+    max_upload_bytes,
+    media_process_timeout_seconds,
+    video_dir,
+)
 from videomemory.control import (
+    active_job_count,
     authenticate_user,
     create_api_key,
     create_session,
@@ -40,23 +60,39 @@ from videomemory.control import (
     get_subscription,
     list_api_keys,
     list_jobs,
+    record_usage,
     revoke_api_key,
     revoke_session,
     usage_summary,
     user_for_api_key,
     user_for_session,
 )
+from videomemory.control import (
+    connect as control_connect,
+)
 from videomemory.ingest import video_id_for
-from videomemory.jobs import enqueue_ingest, recover_pending_jobs, shutdown_jobs
-from videomemory.library import get_video, list_videos
+from videomemory.jobs import enqueue_ingest, enqueue_upload, recover_pending_jobs, shutdown_jobs
+from videomemory.library import delete_video, get_video, get_windows, is_index_ready, list_videos
 from videomemory.mcp_server import build_server
-from videomemory.memory_graph import add_note, graph_snapshot, recall_context
+from videomemory.memory_graph import add_note, graph_snapshot, recall_context, record_tool_memory
 from videomemory.outbound_proxy import guarded_egress_proxy
+from videomemory.search import search_video
 from videomemory.tenant import reset_tenant, set_tenant, tenant_scope
 from videomemory.url_safety import UnsafeURLError, validate_public_url
 
 SESSION_COOKIE = "vm_session"
 MAX_JSON_BYTES = 32 * 1024
+UPLOAD_CONTENT_TYPES = {
+    "audio/m4a": ".m4a",
+    "audio/mp4": ".m4a",
+    "audio/mpeg": ".mp3",
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+    "video/mp4": ".mp4",
+    "video/quicktime": ".mov",
+    "video/webm": ".webm",
+    "video/x-matroska": ".mkv",
+}
 
 
 def _origins() -> list[str]:
@@ -171,9 +207,11 @@ class RateLimitMiddleware:
             return
         client = scope.get("client")
         request_headers = dict(scope.get("headers", []))
-        forwarded = request_headers.get(b"cf-connecting-ip") or request_headers.get(b"x-forwarded-for")
+        trust_proxy = os.environ.get("VIDEOMEMORY_TRUST_PROXY_HEADERS", "0").lower() in {"1", "true", "yes"}
+        forwarded = (request_headers.get(b"cf-connecting-ip") or request_headers.get(b"x-forwarded-for")) if trust_proxy else None
         key = forwarded.decode(errors="ignore") if forwarded else (client[0] if client else "unknown")
         key = key.split(",", 1)[0].strip()
+        request_limit = 10 if str(scope.get("path", "")) in {"/api/auth/login", "/api/auth/signup"} else self.limit
         now = time.monotonic()
         if len(self.hits) > 10_000:
             self.hits = defaultdict(
@@ -187,7 +225,7 @@ class RateLimitMiddleware:
         bucket = self.hits[key]
         while bucket and bucket[0] < now - self.window:
             bucket.popleft()
-        if len(bucket) >= self.limit:
+        if len(bucket) >= request_limit:
             await JSONResponse({"error": "rate limit exceeded"}, status_code=429)(scope, receive, send)
             return
         bucket.append(now)
@@ -238,7 +276,20 @@ class ExactASGIRoute(BaseRoute):
 
 
 async def health(_: Request) -> JSONResponse:
-    return JSONResponse({"status": "ok", "service": "videomemory", "version": "1.0.0"})
+    checks: dict[str, bool] = {"database": False, "storage": False}
+    try:
+        with control_connect() as con:
+            con.execute("SELECT 1").fetchone()
+        checks["database"] = True
+        root = data_root()
+        checks["storage"] = os.access(root, os.W_OK) and shutil.disk_usage(root).free > 20 * 1024 * 1024
+    except OSError:
+        pass
+    ready = all(checks.values())
+    return JSONResponse(
+        {"status": "ok" if ready else "not_ready", "service": "videomemory", "version": "1.0.0", "checks": checks},
+        status_code=200 if ready else 503,
+    )
 
 
 async def signup(request: Request) -> JSONResponse:
@@ -287,13 +338,15 @@ async def logout(request: Request) -> JSONResponse:
 
 def _account_payload(user: dict[str, Any]) -> dict[str, Any]:
     with tenant_scope(user["user_id"]):
-        videos = [video.model_dump(mode="json") for video in list_videos()]
+        videos = []
+        for video in list_videos():
+            videos.append(_public_video(video.model_dump(mode="json")))
     return {
         "user": user,
         "usage": usage_summary(user["user_id"]),
         "api_keys": list_api_keys(user["user_id"]),
         "videos": videos,
-        "jobs": list_jobs(user["user_id"]),
+        "jobs": [_public_job(job) for job in list_jobs(user["user_id"])],
         "billing": {**public_billing_config(), "subscription": get_subscription(user["user_id"])},
     }
 
@@ -333,6 +386,8 @@ async def add_video(request: Request) -> JSONResponse:
     try:
         _require_browser_origin(request)
         user = _require_user(request)
+        if active_job_count() >= max_active_jobs():
+            return _error("processing queue is full; try again shortly", 503)
         data = await _json(request)
         source = await validate_public_url(str(data.get("url", "")))
         active = find_active_job(user["user_id"], source)
@@ -340,10 +395,10 @@ async def add_video(request: Request) -> JSONResponse:
             return JSONResponse({"job": active}, status_code=202)
         with tenant_scope(user["user_id"]):
             existing = get_video(video_id_for(source))
-        if existing:
+        if existing and is_index_ready(existing.video_id):
             return JSONResponse({"video": existing.model_dump(mode="json"), "already_indexed": True})
         usage = usage_summary(user["user_id"])
-        queued = sum(1 for job in list_jobs(user["user_id"], 100) if job["status"] in {"queued", "processing"})
+        queued = active_job_count(user["user_id"])
         if usage["totals"].get("videos", 0) + queued >= usage["limits"]["videos"]:
             return _error("monthly video limit reached", 402)
         return JSONResponse({"job": enqueue_ingest(user["user_id"], source)}, status_code=202)
@@ -353,11 +408,206 @@ async def add_video(request: Request) -> JSONResponse:
         return _error(str(exc))
 
 
+def _public_job(job: dict[str, Any]) -> dict[str, Any]:
+    public = dict(job)
+    if public.get("kind") == "upload":
+        path = Path(str(public["source"]))
+        sidecar = path.with_suffix(".name")
+        name = sidecar.read_text().strip() if sidecar.is_file() else path.name
+        public["source"] = f"upload://{name}"
+    return public
+
+
+def _public_video(video: dict[str, Any]) -> dict[str, Any]:
+    public = dict(video)
+    if not str(public.get("source", "")).startswith(("http://", "https://")):
+        path = Path(str(public.get("source", "upload")))
+        sidecar = path.with_suffix(".name")
+        name = sidecar.read_text().strip() if sidecar.is_file() else path.name
+        public["source"] = f"upload://{name}"
+    public.pop("file_path", None)
+    return public
+
+
+def _quota_allows_video(user_id: str) -> bool:
+    usage = usage_summary(user_id)
+    queued = active_job_count(user_id)
+    return usage["totals"].get("videos", 0) + queued < usage["limits"]["videos"]
+
+
+def _tree_bytes(root: Path) -> int:
+    total = 0
+    for item in root.rglob("*"):
+        if item.is_file():
+            with contextlib.suppress(OSError):
+                total += item.stat().st_size
+    return total
+
+
+async def _validate_media(path: Path) -> None:
+    """Reject mislabeled or corrupt input before admitting work to the queue."""
+    proc = await asyncio.create_subprocess_exec(
+        "ffprobe", "-v", "error", "-protocol_whitelist", "file,pipe,crypto,data",
+        "-show_entries", "format=duration", "-of", "csv=p=0", str(path),
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=min(30, media_process_timeout_seconds()))
+    except TimeoutError as exc:
+        proc.kill()
+        await proc.wait()
+        raise ValueError("uploaded media validation timed out") from exc
+    if proc.returncode != 0 or not out.strip():
+        raise ValueError("uploaded file is not valid playable media")
+
+
+async def upload_video(request: Request) -> JSONResponse:
+    """Stream one authenticated media upload into the caller's private tenant volume."""
+    destination: Path | None = None
+    try:
+        _require_browser_origin(request)
+        user = _require_user(request)
+        if active_job_count() >= max_active_jobs():
+            return _error("processing queue is full; try again shortly", 503)
+        if not _quota_allows_video(user["user_id"]):
+            return _error("monthly video limit reached", 402)
+        content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        suffix = UPLOAD_CONTENT_TYPES.get(content_type)
+        if not suffix:
+            return _error("upload an MP4, MOV, WebM, MKV, MP3, M4A, or WAV file", 415)
+        declared = request.headers.get("content-length")
+        if declared:
+            try:
+                if int(declared) > max_upload_bytes():
+                    return _error("uploaded file is too large", 413)
+            except ValueError:
+                return _error("invalid Content-Length header")
+        with tenant_scope(user["user_id"]):
+            uploads = data_dir() / "uploads"
+            uploads.mkdir(parents=True, exist_ok=True)
+            supplied_name = request.headers.get("x-videomemory-filename", "upload")
+            safe_stem = re.sub(r"[^a-zA-Z0-9._-]+", "-", Path(supplied_name).stem).strip("-._")[:60] or "upload"
+            destination = (uploads / f"pending_{uuid.uuid4().hex}{suffix}").resolve()
+            if not destination.is_relative_to(uploads.resolve()):
+                raise ValueError("upload path is invalid")
+            starting_bytes = _tree_bytes(data_dir())
+            starting_global_bytes = _tree_bytes(data_root())
+            total = 0
+            digest = hashlib.sha256()
+            with destination.open("xb") as handle:
+                async for chunk in request.stream():
+                    total += len(chunk)
+                    if total > max_upload_bytes():
+                        raise OverflowError("uploaded file is too large")
+                    if starting_bytes + total > max_tenant_bytes():
+                        raise OverflowError("tenant storage limit reached")
+                    if starting_global_bytes + total > max_global_bytes():
+                        raise OverflowError("service storage is temporarily full")
+                    digest.update(chunk)
+                    handle.write(chunk)
+            if total == 0:
+                raise ValueError("uploaded file is empty")
+            await _validate_media(destination)
+            digest_hex = digest.hexdigest()
+            existing_match = next(
+                (item for item in uploads.glob(f"{digest_hex}.*") if item.suffix != ".name" and item.is_file()),
+                None,
+            )
+            final = existing_match or (uploads / f"{digest_hex}{suffix}").resolve()
+            if existing_match:
+                destination.unlink(missing_ok=True)
+            else:
+                destination.replace(final)
+                final.with_suffix(".name").write_text(f"{safe_stem}{suffix}")
+            destination = final
+            active = find_active_job(user["user_id"], str(destination))
+            if active:
+                return JSONResponse({"job": _public_job(active)}, status_code=202)
+            existing = get_video(video_id_for(str(destination), file_path=destination))
+            if existing and is_index_ready(existing.video_id):
+                return JSONResponse({"video": _public_video(existing.model_dump(mode="json")), "already_indexed": True})
+        return JSONResponse(
+            {"job": _public_job(enqueue_upload(user["user_id"], str(destination)))}, status_code=202
+        )
+    except PermissionError as exc:
+        return _error(str(exc), 401)
+    except OverflowError as exc:
+        if destination:
+            destination.unlink(missing_ok=True)
+        return _error(str(exc), 413)
+    except (OSError, ValueError) as exc:
+        if destination:
+            destination.unlink(missing_ok=True)
+        return _error(str(exc))
+
+
 async def job_detail(request: Request) -> JSONResponse:
     try:
         user = _require_user(request)
         job = get_job(user["user_id"], request.path_params["job_id"])
-        return JSONResponse({"job": job}) if job else _error("job not found", 404)
+        return JSONResponse({"job": _public_job(job)}) if job else _error("job not found", 404)
+    except PermissionError as exc:
+        return _error(str(exc), 401)
+
+
+async def video_detail(request: Request) -> JSONResponse:
+    try:
+        user = _require_user(request)
+        video_id = request.path_params["video_id"]
+        with tenant_scope(user["user_id"]):
+            video = get_video(video_id)
+            if not video:
+                return _error("video not found", 404)
+            windows = [window.model_dump(mode="json") for window in get_windows(video_id)]
+        return JSONResponse({"video": _public_video(video.model_dump(mode="json")), "transcript": windows})
+    except PermissionError as exc:
+        return _error(str(exc), 401)
+
+
+async def ask_video(request: Request) -> JSONResponse:
+    try:
+        _require_browser_origin(request)
+        user = _require_user(request)
+        data = await _json(request)
+        question = " ".join(str(data.get("question", "")).split())
+        if not question or len(question) > 500:
+            raise ValueError("enter a question up to 500 characters")
+        video_id = request.path_params["video_id"]
+        with tenant_scope(user["user_id"]):
+            if not get_video(video_id):
+                return _error("video not found", 404)
+            hits = await asyncio.to_thread(search_video, video_id, question, top_k=5)
+            payload = [hit.model_dump(mode="json") for hit in hits]
+            for item in payload:
+                if not str(item.get("source", "")).startswith(("http://", "https://")):
+                    item["source"] = "upload://private-media"
+                    item["deep_link"] = None
+            record_tool_memory("dashboard_search", {"query": question}, {"hits": payload})
+        record_usage(user["user_id"], "mcp_calls", 1, {"tool": "dashboard_search"})
+        return JSONResponse({"hits": payload})
+    except PermissionError as exc:
+        return _error(str(exc), 401)
+    except ValueError as exc:
+        return _error(str(exc))
+
+
+async def remove_video(request: Request) -> JSONResponse:
+    try:
+        _require_browser_origin(request)
+        user = _require_user(request)
+        video_id = request.path_params["video_id"]
+        with tenant_scope(user["user_id"]):
+            video = get_video(video_id)
+            if not video:
+                return _error("video not found", 404)
+            source = Path(video.source) if not str(video.source).startswith(("http://", "https://")) else None
+            delete_video(video_id)
+            shutil.rmtree(video_dir(video_id), ignore_errors=True)
+            shutil.rmtree(frame_dir(video_id), ignore_errors=True)
+            if source and source.is_relative_to((data_dir() / "uploads").resolve()):
+                source.unlink(missing_ok=True)
+                source.with_suffix(".name").unlink(missing_ok=True)
+        return JSONResponse({"ok": True})
     except PermissionError as exc:
         return _error(str(exc), 401)
 
@@ -389,6 +639,33 @@ async def create_note(request: Request) -> JSONResponse:
                 str(data["parent_note_id"]) if data.get("parent_note_id") else None,
             )
         return JSONResponse({"note": note}, status_code=201)
+    except PermissionError as exc:
+        return _error(str(exc), 401)
+    except ValueError as exc:
+        return _error(str(exc))
+
+
+async def artifacts(request: Request) -> JSONResponse:
+    try:
+        user = _require_user(request)
+        with tenant_scope(user["user_id"]):
+            if request.method == "GET":
+                return JSONResponse(recall_artifacts(request.query_params.get("q", ""), limit=50))
+            _require_browser_origin(request)
+            data = await _json(request)
+            item = remember_artifact(
+                title=str(data.get("title", "")),
+                locator=str(data.get("locator", "")),
+                kind=str(data.get("kind", "other")),
+                access_instructions=str(data.get("access_instructions", "")),
+                summary=str(data.get("summary", "")),
+                content=str(data.get("content", "")),
+                project=str(data.get("project", "")),
+                agent="dashboard",
+                parent_artifact_id=str(data["parent_artifact_id"]) if data.get("parent_artifact_id") else None,
+                metadata=data.get("metadata") if isinstance(data.get("metadata"), dict) else {},
+            )
+        return JSONResponse({"artifact": item}, status_code=201)
     except PermissionError as exc:
         return _error(str(exc), 401)
     except ValueError as exc:
@@ -483,9 +760,14 @@ routes = [
     Route("/api/keys", create_key, methods=["POST"]),
     Route("/api/keys/{prefix:str}", delete_key, methods=["DELETE"]),
     Route("/api/videos", add_video, methods=["POST"]),
+    Route("/api/uploads", upload_video, methods=["POST"]),
+    Route("/api/videos/{video_id:str}", video_detail, methods=["GET"]),
+    Route("/api/videos/{video_id:str}", remove_video, methods=["DELETE"]),
+    Route("/api/videos/{video_id:str}/ask", ask_video, methods=["POST"]),
     Route("/api/jobs/{job_id:str}", job_detail, methods=["GET"]),
     Route("/api/memory", memory_graph, methods=["GET"]),
     Route("/api/memory/notes", create_note, methods=["POST"]),
+    Route("/api/artifacts", artifacts, methods=["GET", "POST"]),
     Route("/api/billing/checkout", billing_checkout, methods=["POST"]),
     Route("/api/billing/verify", billing_verify, methods=["POST"]),
     Route("/api/billing/cancel", billing_cancel, methods=["POST"]),
@@ -507,6 +789,7 @@ middleware = [
             "Mcp-Session-Id",
             "MCP-Protocol-Version",
             "X-Videomemory-Session",
+            "X-Videomemory-Filename",
         ],
         expose_headers=["Mcp-Session-Id"],
     ),

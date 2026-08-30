@@ -98,8 +98,11 @@ def record_tool_memory(tool: str, arguments: dict[str, Any], result: dict[str, A
     for video_id in videos:
         video = get_video(video_id)
         label = (video.title if video else None) or (source[:160] if source else video_id)
+        stored_source = video.source if video else source
+        if stored_source and not stored_source.startswith(("http://", "https://")):
+            stored_source = str(arguments.get("display_source") or f"upload://{video.title if video else video_id}")
         properties = {
-            "source": video.source if video else source,
+            "source": stored_source,
             "duration": video.duration if video else 0,
             "title": video.title if video else None,
         }
@@ -192,6 +195,32 @@ def list_notes(video_id: str | None = None) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def connect_artifact_memory(artifact: dict[str, Any]) -> None:
+    """Project an artifact into the same relation graph as video memory."""
+    artifact_id = str(artifact["artifact_id"])
+    _upsert_node(
+        artifact_id,
+        "artifact",
+        str(artifact.get("title") or artifact_id),
+        {
+            "kind": artifact.get("kind"),
+            "locator": artifact.get("locator"),
+            "project": artifact.get("project"),
+            "version": artifact.get("version"),
+            "summary": artifact.get("summary"),
+            "access_instructions": artifact.get("access_instructions"),
+        },
+    )
+    parent = artifact.get("parent_artifact_id")
+    if parent:
+        _connect(str(parent), artifact_id, "DERIVED_INTO", {"version": artifact.get("version")})
+    project = str(artifact.get("project") or "").strip()
+    if project:
+        project_id = _digest("prj", project.lower())
+        _upsert_node(project_id, "project", project, {"normalized": project.lower()})
+        _connect(project_id, artifact_id, "CONTAINS_ARTIFACT", {"agent": artifact.get("agent")})
+
+
 def graph_snapshot(limit: int = 80) -> dict[str, Any]:
     limit = max(10, min(limit, 200))
     with connect() as con:
@@ -243,4 +272,11 @@ def recall_context(query: str, limit: int = 12) -> dict[str, Any]:
     return {"query": query, "matches": selected, "relations": related_edges}
 
 
-__all__ = ["add_note", "graph_snapshot", "list_notes", "recall_context", "record_tool_memory"]
+__all__ = [
+    "add_note",
+    "connect_artifact_memory",
+    "graph_snapshot",
+    "list_notes",
+    "recall_context",
+    "record_tool_memory",
+]

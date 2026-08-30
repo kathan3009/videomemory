@@ -54,6 +54,13 @@ CREATE TABLE IF NOT EXISTS visual_frames (
 );
 CREATE INDEX IF NOT EXISTS idx_vframes_video ON visual_frames(video_id);
 
+CREATE TABLE IF NOT EXISTS video_indexes (
+    video_id TEXT PRIMARY KEY,
+    transcript_ready INTEGER NOT NULL DEFAULT 0,
+    visual_ready INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Tenant-private property graph: a lightweight Neo4j-shaped context brain.
 CREATE TABLE IF NOT EXISTS memory_nodes (
     node_id TEXT PRIMARY KEY,
@@ -103,14 +110,50 @@ CREATE TABLE IF NOT EXISTS video_notes (
 );
 CREATE INDEX IF NOT EXISTS idx_video_notes_video ON video_notes(video_id, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS artifacts (
+    artifact_id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    locator TEXT NOT NULL,
+    access_instructions TEXT NOT NULL DEFAULT '',
+    summary TEXT NOT NULL DEFAULT '',
+    content TEXT NOT NULL DEFAULT '',
+    content_hash TEXT NOT NULL,
+    project TEXT NOT NULL DEFAULT '',
+    agent TEXT NOT NULL DEFAULT '',
+    parent_artifact_id TEXT,
+    version INTEGER NOT NULL DEFAULT 1,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_locator_project ON artifacts(locator, project);
+CREATE INDEX IF NOT EXISTS idx_artifacts_updated ON artifacts(updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS artifact_versions (
+    version_id TEXT PRIMARY KEY,
+    artifact_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    content_hash TEXT NOT NULL,
+    summary TEXT NOT NULL DEFAULT '',
+    content TEXT NOT NULL DEFAULT '',
+    locator TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(artifact_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_artifact_versions_artifact ON artifact_versions(artifact_id, version DESC);
+
 """
 
 
 @contextmanager
 def connect():
     p = db_path()
-    con = sqlite3.connect(p)
+    con = sqlite3.connect(p, timeout=30)
     con.row_factory = sqlite3.Row
+    con.execute("PRAGMA foreign_keys=ON")
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA busy_timeout=5000")
     try:
         con.executescript(SCHEMA)
         yield con
@@ -150,6 +193,15 @@ def delete_video(video_id: str) -> None:
     with connect() as con:
         con.execute("DELETE FROM windows WHERE video_id=?", (video_id,))
         con.execute("DELETE FROM visual_frames WHERE video_id=?", (video_id,))
+        con.execute("DELETE FROM video_indexes WHERE video_id=?", (video_id,))
+        note_ids = [row[0] for row in con.execute("SELECT note_id FROM video_notes WHERE video_id=?", (video_id,))]
+        node_ids = [row[0] for row in con.execute("SELECT node_id FROM memory_nodes WHERE node_id=? OR properties_json LIKE ?", (video_id, f'%"video_id": "{video_id}"%'))]
+        all_nodes = [video_id, *note_ids, *node_ids]
+        for node_id in set(all_nodes):
+            con.execute("DELETE FROM memory_edges WHERE source_id=? OR target_id=?", (node_id, node_id))
+            con.execute("DELETE FROM memory_nodes WHERE node_id=?", (node_id,))
+        con.execute("DELETE FROM video_notes WHERE video_id=?", (video_id,))
+        con.execute("DELETE FROM memory_events WHERE video_id=?", (video_id,))
         con.execute("DELETE FROM videos WHERE video_id=?", (video_id,))
         con.commit()
 
@@ -158,6 +210,26 @@ def has_windows(video_id: str) -> bool:
     with connect() as con:
         n = con.execute("SELECT COUNT(*) FROM windows WHERE video_id=?", (video_id,)).fetchone()[0]
     return n > 0
+
+
+def mark_index_ready(video_id: str, capability: str) -> None:
+    if capability not in {"transcript", "visual"}:
+        raise ValueError("unknown index capability")
+    column = "transcript_ready" if capability == "transcript" else "visual_ready"
+    with connect() as con:
+        con.execute(
+            f"""INSERT INTO video_indexes (video_id,{column},updated_at) VALUES (?,1,CURRENT_TIMESTAMP)
+                ON CONFLICT(video_id) DO UPDATE SET {column}=1,updated_at=CURRENT_TIMESTAMP""",
+            (video_id,),
+        )
+        con.commit()
+
+
+def is_index_ready(video_id: str, capability: str = "transcript") -> bool:
+    column = "transcript_ready" if capability == "transcript" else "visual_ready"
+    with connect() as con:
+        row = con.execute(f"SELECT {column} FROM video_indexes WHERE video_id=?", (video_id,)).fetchone()
+    return bool(row and row[0])
 
 
 # ----- Windows -----------------------------------------------------------

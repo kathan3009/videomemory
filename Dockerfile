@@ -5,9 +5,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     PATH="/app/.venv/bin:$PATH" \
-    HF_HOME=/data/models/huggingface \
-    TORCH_HOME=/data/models/torch \
-    XDG_CACHE_HOME=/data/models/cache \
+    HF_HOME=/models/huggingface \
+    TORCH_HOME=/models/torch \
+    XDG_CACHE_HOME=/models/cache \
     VIDEOMEMORY_HOSTED=1 \
     VIDEOMEMORY_DATA_ROOT=/data/videomemory
 
@@ -21,7 +21,11 @@ COPY pyproject.toml uv.lock README.md LICENSE ./
 COPY src ./src
 RUN uv sync --frozen --no-dev
 
-RUN mkdir -p /data/videomemory /data/models
+RUN groupadd --system videomemory \
+    && useradd --system --gid videomemory --home-dir /app videomemory \
+    && mkdir -p /data/videomemory /models \
+    && chown -R videomemory:videomemory /app /data /models
+USER videomemory
 EXPOSE 8080
 
 CMD ["sh", "-c", "videomemory mcp serve-http --host 0.0.0.0 --port ${PORT:-8080}"]

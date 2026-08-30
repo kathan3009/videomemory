@@ -116,4 +116,32 @@ def search(query: str, *, top_k: int = 5) -> list[Hit]:
     return hits
 
 
-__all__ = ["skip", "search"]
+def search_video(video_id: str, query: str, *, top_k: int = 5) -> list[Hit]:
+    """Search an already-indexed video without re-ingesting its source."""
+    video = get_video(video_id)
+    if not video:
+        raise ValueError("video not found")
+    rows = iter_windows_for_video(video_id)
+    if not rows:
+        return []
+    query_vec = np.asarray(embed_text(query), dtype=np.float32)
+    hits: list[Hit] = []
+    for window, score in _topk_cosine(query_vec, rows, top_k=max(1, min(top_k, 10))):
+        hit_time = (window.start + window.end) / 2
+        hits.append(
+            Hit(
+                video_id=video_id,
+                title=video.title,
+                source=video.source,
+                start=window.start,
+                end=window.end,
+                timestamp_human=fmt_time(hit_time),
+                deep_link=deep_link(video.source, hit_time),
+                transcript_excerpt=_excerpt_around(window.text),
+                score=score,
+            )
+        )
+    return hits
+
+
+__all__ = ["skip", "search", "search_video"]

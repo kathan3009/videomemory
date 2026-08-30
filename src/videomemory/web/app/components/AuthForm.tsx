@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, useState } from 'react';
+import { FormEvent, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { api } from '../lib/api';
 
@@ -18,6 +18,15 @@ export function AuthForm({ mode }: { mode: 'login' | 'signup' }) {
   const [error, setError] = useState('');
   const [createdKey, setCreatedKey] = useState('');
   const [copied, setCopied] = useState(false);
+  const [selectedPlan, setSelectedPlan] = useState('free');
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const plan = new URLSearchParams(window.location.search).get('plan');
+      if (plan === 'creator' || plan === 'studio') setSelectedPlan(plan);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -48,12 +57,12 @@ export function AuthForm({ mode }: { mode: 'login' | 'signup' }) {
   if (createdKey) {
     return (
       <div className="key-reveal">
-        <div className="key-success"><span className="status-dot" /> Account ready</div>
+        <div className="key-success"><span className="status-dot" /> Account ready{selectedPlan !== 'free' ? ` · ${selectedPlan} selected` : ''}</div>
         <h1>Save your first<br />MCP key.</h1>
         <p>This secret is shown once. Keep it in your password manager; you can rotate it from the dashboard.</p>
         <div className="secret-field"><code>{createdKey}</code><button type="button" onClick={copyKey}>{copied ? 'Copied' : 'Copy'}</button></div>
-        <button className="button button-primary auth-submit" type="button" onClick={() => router.push('/dashboard')}>
-          Open dashboard <span>↗</span>
+        <button className="button button-primary auth-submit" type="button" onClick={() => router.push(selectedPlan === 'free' ? '/dashboard' : '/dashboard?section=billing')}>
+          {selectedPlan === 'free' ? 'Open dashboard' : 'Continue to plan'} <span>↗</span>
         </button>
       </div>
     );

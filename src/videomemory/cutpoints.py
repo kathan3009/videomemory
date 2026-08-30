@@ -180,6 +180,9 @@ async def suggest_cuts(
     """Frame-accurate cut plan for a take: motion picks where, beat picks how long."""
     from videomemory.frames import _frame_uri, extract_frames
 
+    beats_per_cut = max(1, min(int(beats_per_cut), 16))
+    target_len = max(0.25, min(float(target_len), 30.0))
+
     vid, source, local, duration = await _ensure_video(url)
     fps = cut_motion_fps()
     times, ydif = await _motion_curve(local, fps)
@@ -197,7 +200,7 @@ async def suggest_cuts(
         s.deep_link = deep_link(source, s.in_seconds)
 
     if with_frames and segs:
-        extracted = await extract_frames(vid, source, [s.in_seconds for s in segs])
+        extracted = await extract_frames(vid, source, [s.in_seconds for s in segs[:64]])
         have = {round(t, 3) for t, p in extracted if p is not None}
         for s in segs:
             if round(s.in_seconds, 3) in have:

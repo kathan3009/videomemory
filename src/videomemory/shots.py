@@ -63,12 +63,14 @@ async def detect_shots(
     """Detect frame-accurate shots in a video. Returns an editable cut list."""
     from videomemory.frames import _frame_uri, extract_frames
 
-    thr = scene_threshold() if threshold is None else threshold
-    mins = min_shot_seconds() if min_shot is None else min_shot
+    thr = max(0.05, min(0.95, scene_threshold() if threshold is None else threshold))
+    mins = max(0.25, min(30.0, min_shot_seconds() if min_shot is None else min_shot))
 
     vid, source, local, duration = await _ensure_video(url)
     cuts = await _scene_cut_times(local, thr)
     bounds = _merge_boundaries(cuts, duration, mins)
+    if len(bounds) - 1 > 500:
+        raise ValueError("shot detection produced more than 500 shots; raise threshold or minimum shot length")
 
     shots: list[Shot] = []
     for i in range(len(bounds) - 1):
@@ -88,7 +90,7 @@ async def detect_shots(
         )
 
     if with_frames and shots:
-        extracted = await extract_frames(vid, source, [s.mid_seconds for s in shots])
+        extracted = await extract_frames(vid, source, [s.mid_seconds for s in shots[:64]])
         by_t = {round(t, 3): p for t, p in extracted}
         for s in shots:
             if by_t.get(s.mid_seconds) is not None:

@@ -3,11 +3,11 @@
 # 🎬 videomemory
 
 **give Claude Code & Codex a real memory for video.**
-local-first or hosted. private. one MCP server, eleven tools.
+local-first or hosted. private. one MCP server, thirteen tools.
 
 [![MIT](https://img.shields.io/badge/license-MIT-black?style=flat-square)](LICENSE)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-3776ab?style=flat-square)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-27%20passing-34d399?style=flat-square)](tests/)
+[![Tests](https://img.shields.io/badge/tests-40%20passing-34d399?style=flat-square)](tests/)
 [![Hosted](https://img.shields.io/badge/hosted-ready-8ee7ff?style=flat-square)]()
 [![Stars](https://img.shields.io/github/stars/kathan3009/videomemory?style=flat-square&color=fbbf24)](https://github.com/kathan3009/videomemory)
 
@@ -45,8 +45,8 @@ it'll find the skill in `.claude/skills/` and run setup itself.
 
 The same engine now includes an authenticated Streamable HTTP MCP endpoint, account dashboard,
 tenant-isolated storage, quotas, Razorpay subscriptions, guarded public-URL ingestion, and a
-living context graph. Deploy the backend with the included `Dockerfile` and `railway.toml`; deploy
-`src/videomemory/web` with OpenAI Sites. See `deploy.env.example` and
+living context graph. Deploy the backend with the included hardened `Dockerfile`; deploy
+`src/videomemory/web` with OpenAI Sites. Follow `src/videomemory/DEPLOYMENT.md`, `deploy.env.example`, and
 `src/videomemory/web/env.example` for the required environment variables.
 
 Hosted MCP clients connect to `https://<api-host>/mcp` with a dashboard-generated bearer key.
@@ -69,6 +69,8 @@ once installed, every Claude Code & Codex session gets these tools:
 | ➕ | **`add`** / **`list`** | library management. |
 | ✣ | **`memory`** | recall the private context graph built from prior searches, videos, exact moments, and notes. |
 | ✎ | **`note`** | attach a durable note or branch a new version from an earlier interpretation. |
+| ◇ | **`remember_artifact`** | remember where an agent-made artifact lives, what it contains, how to access it, and its project/parent. |
+| ⌕ | **`artifact_memory`** | recall artifacts and version history across Codex, Claude, Cursor, and the rest of the team. |
 
 frames come back as `videomemory://...` URIs that Claude fetches with native vision. no base64 blobs in your context window.
 
@@ -139,7 +141,7 @@ URL  →  yt-dlp + ffmpeg  →  faster-whisper  →  30s text windows
                                                       ↓
                        cosine retrieval  +  on-demand ffmpeg keyframes
                                                       ↓
-                                      9 MCP tools  (stdio transport)
+                                     13 MCP tools  (stdio + HTTP transport)
                                                       ↓
                                Claude Code  ·  Codex  ·  any MCP client
 ```
@@ -209,7 +211,7 @@ src/videomemory/
 ├── understand.py        # bullets + chapters (LLM if key present, else extractive)
 ├── library.py           # SQLite schema + CRUD + bundle export/import
 ├── memory_graph.py      # tenant-private searches ↔ videos ↔ moments ↔ branched notes
-├── mcp_server.py        # stdio + hosted Streamable HTTP MCP, 11 tools
+├── mcp_server.py        # stdio + hosted Streamable HTTP MCP, 13 tools
 ├── youtube_history.py   # Google Takeout parser
 ├── deps.py              # `videomemory setup` wizard
 ├── embed.py             # bge-small wrapper

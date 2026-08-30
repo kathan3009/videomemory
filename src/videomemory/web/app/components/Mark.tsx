@@ -1,3 +1,5 @@
+import Link from 'next/link';
+
 export function Mark({ compact = false }: { compact?: boolean }) {
   return (
     <span className={compact ? 'mark mark-compact' : 'mark'} aria-hidden="true">
@@ -10,10 +12,9 @@ export function Mark({ compact = false }: { compact?: boolean }) {
 
 export function Brand() {
   return (
-    <Link className="brand" href="/" aria-label="Videomemory home">
+    <Link className="brand" href="/" aria-label="VideoMemory home">
       <Mark />
-      <span>videomemory</span>
+      <span>VideoMemory</span>
     </Link>
   );
 }
-import Link from 'next/link';

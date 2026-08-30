@@ -374,6 +374,19 @@ def find_active_job(user_id: str, source: str) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+def active_job_count(user_id: str | None = None) -> int:
+    """Count every queued/processing job; never infer quota from a paginated list."""
+    with connect() as con:
+        if user_id:
+            row = con.execute(
+                "SELECT COUNT(*) FROM jobs WHERE user_id=? AND status IN ('queued','processing')",
+                (user_id,),
+            ).fetchone()
+        else:
+            row = con.execute("SELECT COUNT(*) FROM jobs WHERE status IN ('queued','processing')").fetchone()
+    return int(row[0])
+
+
 def pending_jobs() -> list[dict[str, Any]]:
     with connect() as con:
         rows = con.execute(
@@ -448,6 +461,7 @@ def set_setting(key: str, value: str) -> None:
 
 __all__ = [
     "PLAN_LIMITS",
+    "active_job_count",
     "apply_subscription",
     "authenticate_user",
     "connect",

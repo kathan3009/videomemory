@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+from pathlib import Path
 
 from starlette.testclient import TestClient
 
@@ -102,6 +103,8 @@ def test_authenticated_mcp_initializes_without_redirect_and_lists_all_tools(monk
             "list",
             "memory",
             "note",
+            "remember_artifact",
+            "artifact_memory",
         }
 
 
@@ -161,3 +164,155 @@ def test_context_graph_records_queries_and_versioned_note_branches(monkeypatch, 
 
     with tenant_scope("usr_dddddddddddddddddddddddddddddddd"):
         assert graph_snapshot()["nodes"] == []
+
+
+def test_upload_is_content_addressed_tenant_scoped_and_path_is_private(monkeypatch, tmp_path):
+    monkeypatch.setenv("VIDEOMEMORY_DATA_ROOT", str(tmp_path))
+    monkeypatch.setenv("VIDEOMEMORY_ALLOWED_HOSTS", "testserver")
+    monkeypatch.setenv("VIDEOMEMORY_WEB_ORIGINS", "http://localhost:3000")
+    import videomemory.saas_api as saas_api
+
+    saas_api = importlib.reload(saas_api)
+    captured: dict[str, str] = {"calls": "0"}
+
+    def queued(user_id: str, source: str):
+        captured.update(user_id=user_id, source=source, calls=str(int(captured["calls"]) + 1))
+        return {
+            "job_id": "job_upload",
+            "kind": "upload",
+            "source": source,
+            "status": "queued",
+            "progress": 0,
+            "created_at": "2026-08-29T00:00:00+00:00",
+        }
+
+    monkeypatch.setattr(saas_api, "enqueue_upload", queued)
+    fixture = Path(__file__).parents[3] / "tests" / "fixtures" / "data" / "silent.mp4"
+    with TestClient(saas_api.app) as client:
+        signup = client.post(
+            "/api/auth/signup",
+            json={"name": "Uploader", "email": "upload@example.com", "password": "a-secure-password"},
+        )
+        response = client.post(
+            "/api/uploads",
+            content=fixture.read_bytes(),
+            headers={"Content-Type": "video/mp4", "X-Videomemory-Filename": "My private clip.mp4"},
+        )
+        duplicate = client.post(
+            "/api/uploads",
+            content=fixture.read_bytes(),
+            headers={"Content-Type": "video/mp4", "X-Videomemory-Filename": "same bytes new name.mp4"},
+        )
+
+    assert signup.status_code == 201
+    assert response.status_code == 202
+    assert duplicate.status_code == 202
+    assert response.json()["job"]["source"] == "upload://My-private-clip.mp4"
+    stored = Path(captured["source"])
+    assert stored.is_file()
+    assert stored.parent.name == "uploads"
+    assert stored.name.endswith(".mp4") and len(stored.stem) == 64
+    assert stored.with_suffix(".name").read_text() == "My-private-clip.mp4"
+    assert len([item for item in stored.parent.glob("*.*") if item.suffix != ".name"]) == 1
+    assert str(tmp_path) not in str(response.json())
+
+
+def test_upload_memory_never_records_internal_paths(monkeypatch, tmp_path):
+    monkeypatch.setenv("VIDEOMEMORY_DATA_ROOT", str(tmp_path))
+    from videomemory.library import upsert_video
+    from videomemory.memory_graph import graph_snapshot, record_tool_memory
+    from videomemory.tenant import tenant_scope
+    from videomemory.types import Video
+
+    tenant = "usr_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    internal = tmp_path / "tenants" / tenant / "uploads" / "hash--private.mp4"
+    with tenant_scope(tenant):
+        video = Video(video_id="f_deadbeefdeadbeef", source=str(internal), title="private")
+        upsert_video(video)
+        record_tool_memory(
+            "add",
+            {"display_source": "upload://private.mp4", "source_type": "upload"},
+            video.model_dump(mode="json"),
+        )
+        graph = graph_snapshot()
+
+    video_nodes = [node for node in graph["nodes"] if node["node_type"] == "video"]
+    assert len(video_nodes) == 1
+    assert video_nodes[0]["node_id"] == video.video_id
+    assert video_nodes[0]["properties"]["source"] == "upload://private.mp4"
+    assert str(tmp_path) not in str(graph)
+
+
+def test_artifact_memory_versions_searches_and_stays_tenant_private(monkeypatch, tmp_path):
+    monkeypatch.setenv("VIDEOMEMORY_DATA_ROOT", str(tmp_path))
+    from videomemory.artifact_memory import artifact_memory, remember_artifact
+    from videomemory.memory_graph import graph_snapshot
+    from videomemory.tenant import tenant_scope
+
+    tenant = "usr_ffffffffffffffffffffffffffffffff"
+    with tenant_scope(tenant):
+        first = remember_artifact(
+            title="Launch runbook",
+            locator="/workspace/DEPLOYMENT.md",
+            kind="document",
+            summary="First deployment checklist",
+            content="deploy the API and verify health",
+            project="VideoMemory",
+            agent="Codex",
+        )
+        second = remember_artifact(
+            title="Launch runbook",
+            locator="/workspace/DEPLOYMENT.md",
+            kind="document",
+            summary="Reviewed launch checklist",
+            content="deploy the API, verify health, and test MCP",
+            project="VideoMemory",
+            agent="Claude",
+        )
+        recalled = artifact_memory("MCP")
+        history = artifact_memory(artifact_id=second["artifact_id"], include_content=True)
+        graph = graph_snapshot()
+
+        assert first["artifact_id"] == second["artifact_id"]
+        assert first["version"] == 1 and second["version"] == 2
+        assert recalled["artifacts"][0]["title"] == "Launch runbook"
+        assert [item["version"] for item in history["versions"]] == [2, 1]
+        assert any(node["node_type"] == "artifact" for node in graph["nodes"])
+        assert any(edge["relation"] == "CONTAINS_ARTIFACT" for edge in graph["edges"])
+
+    with tenant_scope("usr_00000000000000000000000000000000"):
+        assert artifact_memory()["artifacts"] == []
+
+
+def test_artifact_api_is_authenticated_and_tenant_isolated(monkeypatch, tmp_path):
+    with TestClient(_app(monkeypatch, tmp_path)) as first:
+        signup = first.post(
+            "/api/auth/signup",
+            json={"name": "Artifacts", "email": "artifacts@example.com", "password": "a-secure-password"},
+        )
+        session = signup.json()["session_token"]
+        created = first.post(
+            "/api/artifacts",
+            headers={"X-Videomemory-Session": session},
+            json={
+                "title": "Release notes",
+                "locator": "https://example.com/releases/1",
+                "kind": "document",
+                "summary": "Launch artifact",
+                "project": "VideoMemory",
+            },
+        )
+        listed = first.get("/api/artifacts", headers={"X-Videomemory-Session": session})
+
+        assert created.status_code == 201
+        assert listed.json()["artifacts"][0]["title"] == "Release notes"
+
+    with TestClient(_app(monkeypatch, tmp_path)) as second:
+        signup = second.post(
+            "/api/auth/signup",
+            json={"name": "Other", "email": "other@example.com", "password": "a-secure-password"},
+        )
+        isolated = second.get(
+            "/api/artifacts", headers={"X-Videomemory-Session": signup.json()["session_token"]}
+        )
+        assert isolated.json()["artifacts"] == []
