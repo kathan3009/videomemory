@@ -1,0 +1,36 @@
+#cloud-config
+package_update: true
+package_upgrade: true
+
+packages:
+  - docker.io
+  - docker-compose-v2
+  - git
+  - ufw
+
+write_files:
+  - path: /etc/sysctl.d/99-videomemory.conf
+    permissions: "0644"
+    content: |
+      vm.swappiness=10
+      net.ipv4.tcp_syncookies=1
+      net.ipv4.conf.all.rp_filter=1
+      net.ipv4.conf.default.rp_filter=1
+
+runcmd:
+  - [systemctl, enable, --now, docker]
+  - [install, -d, -m, "0755", /opt/videomemory]
+  - [install, -d, -m, "0755", /opt/videomemory/data]
+  - [git, clone, --depth, "1", https://github.com/kathan3009/videomemory.git, /opt/videomemory/app]
+  - [cp, /opt/videomemory/app/deploy.env.example, /opt/videomemory/app/.env.production.pending]
+  - [bash, -lc, "if [ ! -f /swapfile ]; then fallocate -l 4G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile && echo '/swapfile none swap sw 0 0' >> /etc/fstab; fi"]
+  - [sysctl, --system]
+  - [ufw, default, deny, incoming]
+  - [ufw, default, allow, outgoing]
+  - [ufw, allow, OpenSSH]
+  - [ufw, allow, "80/tcp"]
+  - [ufw, allow, "443/tcp"]
+  - [ufw, allow, "443/udp"]
+  - [ufw, --force, enable]
+
+final_message: "Videomemory host is prepared. Add /opt/videomemory/app/.env.production, then start docker-compose.vm.yml."

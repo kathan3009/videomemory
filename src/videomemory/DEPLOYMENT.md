@@ -2,7 +2,13 @@
 
 This is the shortest safe path from a clean checkout to a private beta. Budget 20–30 minutes once the two public hostnames and secrets are ready.
 
-## API and MCP on Railway
+## API and MCP on a persistent VM (recommended)
+
+For the ML-backed API, use at least 8 GB RAM. Railway's trial/free limits are suitable for the web frontend but not for faster-whisper, sentence-transformers, and visual embeddings in one process. The ready-to-run VM profile, Oracle cloud-init, HTTPS proxy, resource caps, migration steps, and rollback procedure are in `deploy/vm/README.md`.
+
+Keep one worker with `VIDEOMEMORY_JOB_CONCURRENCY=1`. A 2-core/12-GB VM is the stable free baseline; a 4-vCPU/8–16-GB credit-backed VM improves transcription latency. Keep the Vercel frontend and point `api.videomemory.kathandesai.com` to the VM after the production smoke test succeeds.
+
+## API and MCP on Railway (temporary fallback)
 
 1. Create a Railway project from the repository root; Railway detects the root `Dockerfile`.
 2. Keep exactly one replica. Attach a persistent volume at `/data/videomemory` and schedule a daily backup.
