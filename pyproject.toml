@@ -42,6 +42,8 @@ dependencies = [
     "faster-whisper>=1.0",
     # Torch is a transitive of sentence-transformers + faster-whisper
     "torch>=2.3",
+    # Keep torchvision on the same CPU wheel index as torch in Linux deployments.
+    "torchvision>=0.27",
     # MCP
     "mcp>=1.0",
     # Hosted SaaS API and Streamable HTTP process
@@ -72,6 +74,9 @@ build-backend = "uv_build"
 
 [tool.uv.sources]
 torch = [
+    { index = "pytorch-cpu", marker = "platform_system == 'Linux'" },
+]
+torchvision = [
     { index = "pytorch-cpu", marker = "platform_system == 'Linux'" },
 ]
 
