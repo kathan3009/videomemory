@@ -5,7 +5,7 @@ import asyncio
 import pytest
 
 from videomemory import outbound_proxy
-from videomemory.ingest import _download_error, _network_args
+from videomemory.ingest import _download_error, _network_args, _youtube_pot_args
 from videomemory.outbound_proxy import _authority, _ordered_addresses, _upstream_proxy
 
 
@@ -102,3 +102,20 @@ def test_download_error_keeps_the_final_actionable_detail():
     error = _download_error(stderr)
 
     assert "ERROR: final extractor failure" in str(error)
+
+
+def test_youtube_pot_provider_is_scoped_to_youtube(monkeypatch):
+    monkeypatch.setenv("VIDEOMEMORY_YTDLP_POT_URL", "http://pot-provider:4416/")
+
+    args = _youtube_pot_args("https://www.youtube.com/watch?v=BM70fDqUo3c")
+
+    assert "youtubepot-bgutilhttp:base_url=http://pot-provider:4416" in args
+    assert "youtube:player_client=mweb" in args
+    assert _youtube_pot_args("https://example.com/video.mp4") == []
+
+
+def test_youtube_pot_provider_rejects_unsafe_operator_url(monkeypatch):
+    monkeypatch.setenv("VIDEOMEMORY_YTDLP_POT_URL", "http://user:secret@pot-provider:4416")
+
+    with pytest.raises(RuntimeError, match="must not include credentials"):
+        _youtube_pot_args("https://youtu.be/BM70fDqUo3c")

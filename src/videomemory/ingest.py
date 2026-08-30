@@ -59,6 +59,22 @@ def _network_args() -> list[str]:
     ]
 
 
+def _youtube_pot_args(url: str) -> list[str]:
+    """Use the operator-controlled PO-token service for YouTube only."""
+    base_url = os.environ.get("VIDEOMEMORY_YTDLP_POT_URL", "").strip().rstrip("/")
+    if not base_url or not _youtube_id(url):
+        return []
+    parsed = urlparse(base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise RuntimeError("VIDEOMEMORY_YTDLP_POT_URL must be an http(s) URL")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise RuntimeError("VIDEOMEMORY_YTDLP_POT_URL must not include credentials, a query, or a fragment")
+    return [
+        "--extractor-args", f"youtubepot-bgutilhttp:base_url={base_url}",
+        "--extractor-args", "youtube:player_client=mweb",
+    ]
+
+
 def _download_error(stderr: bytes) -> RuntimeError:
     stderr_text = stderr.decode(errors="replace")
     if "HTTP Error 429" in stderr_text or "Too Many Requests" in stderr_text:
@@ -175,6 +191,7 @@ async def _download_audio(url: str, dest_dir: Path) -> tuple[Path, str | None, f
         "yt-dlp",
         *_proxy_args(),
         *_network_args(),
+        *_youtube_pot_args(url),
         "-f", "bestaudio/best",
         "-x", "--audio-format", "wav",
         "--no-playlist", "--no-mtime",

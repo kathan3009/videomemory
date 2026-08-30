@@ -10,13 +10,14 @@ services:
       VIDEOMEMORY_HOSTED: "1"
       VIDEOMEMORY_DATA_ROOT: /data/videomemory
       VIDEOMEMORY_JOB_CONCURRENCY: "1"
+      VIDEOMEMORY_YTDLP_POT_URL: "http://pot-provider:4416"
       OMP_NUM_THREADS: "${VIDEOMEMORY_OMP_THREADS:-2}"
     volumes:
       - "${VIDEOMEMORY_HOST_DATA:-/opt/videomemory/data}:/data/videomemory"
     expose:
       - "8080"
     cpus: "${VIDEOMEMORY_CONTAINER_CPUS:-2.0}"
-    mem_limit: "${VIDEOMEMORY_CONTAINER_MEMORY:-10g}"
+    mem_limit: "${VIDEOMEMORY_CONTAINER_MEMORY:-7g}"
     security_opt:
       - no-new-privileges:true
     healthcheck:
@@ -25,6 +26,24 @@ services:
       timeout: 8s
       retries: 20
       start_period: 180s
+    depends_on:
+      pot-provider:
+        condition: service_started
+
+  pot-provider:
+    image: brainicism/bgutil-ytdlp-pot-provider:1.3.2
+    restart: unless-stopped
+    expose:
+      - "4416"
+    cpus: "0.35"
+    mem_limit: 384m
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
 
   caddy:
     image: caddy:2-alpine

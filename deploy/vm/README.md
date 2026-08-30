@@ -7,7 +7,11 @@ This profile runs the API/MCP process and its media worker on one persistent VM,
 - Stable beta baseline: 2 CPU cores, 8–12 GB RAM, and 50 GB persistent disk.
 - Preferred credit-backed shape: 4 vCPU, 8–16 GB RAM.
 - Keep `VIDEOMEMORY_JOB_CONCURRENCY=1`. More CPU makes one transcription faster; increasing ingestion concurrency multiplies model memory.
-- The default VM profile caps the container at 2 CPUs and 10 GB RAM, leaving the host headroom. On a 4 vCPU / 8 GB host, set `VIDEOMEMORY_CONTAINER_CPUS=4.0`, `VIDEOMEMORY_CONTAINER_MEMORY=7g`, and `VIDEOMEMORY_OMP_THREADS=4`.
+- The default VM profile caps the API container at 2 CPUs and 7 GB RAM, leaving the host and PO-token sidecar headroom. On a 4 vCPU / 8 GB host, keep the 7 GB memory cap and set `VIDEOMEMORY_CONTAINER_CPUS=4.0` plus `VIDEOMEMORY_OMP_THREADS=4`.
+
+## Azure student deployment
+
+The current production baseline is Ubuntu 24.04 on `Standard_B2as_v2` (2 vCPU / 8 GiB), a 64 GB managed disk, 4 GB swap, and inbound ports limited to 22, 80, and 443. Keep autoscaling disabled and use a fixed VM shape so background video jobs cannot create surprise instances.
 
 ## Oracle Cloud Free Tier
 
@@ -42,9 +46,9 @@ VIDEOMEMORY_WEB_URL=https://videomemory.kathandesai.com
 VIDEOMEMORY_COOKIE_DOMAIN=.kathandesai.com
 VIDEOMEMORY_HOST_DATA=/opt/videomemory/data
 VIDEOMEMORY_CONTAINER_CPUS=2.0
-VIDEOMEMORY_CONTAINER_MEMORY=10g
+VIDEOMEMORY_CONTAINER_MEMORY=7g
 VIDEOMEMORY_OMP_THREADS=2
-VIDEOMEMORY_PREFER_IPV6=1
+VIDEOMEMORY_PREFER_IPV6=0
 ```
 
 Point the Cloudflare `api.videomemory.kathandesai.com` A/AAAA records at the VM only after both checks succeed on the VM:
@@ -56,7 +60,7 @@ curl --resolve "api.videomemory.kathandesai.com:443:127.0.0.1" \
   https://api.videomemory.kathandesai.com/health
 ```
 
-The API container port is deliberately not published on the host; Caddy is the only public entry point. Leave Railway running during validation so DNS can be rolled back immediately.
+The API container port and the YouTube proof-of-origin token provider are deliberately not published on the host; Caddy is the only public entry point. Leave Railway running during validation so DNS can be rolled back immediately.
 
 ## Migration and verification
 
