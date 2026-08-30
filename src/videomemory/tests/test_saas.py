@@ -316,3 +316,97 @@ def test_artifact_api_is_authenticated_and_tenant_isolated(monkeypatch, tmp_path
             "/api/artifacts", headers={"X-Videomemory-Session": signup.json()["session_token"]}
         )
         assert isolated.json()["artifacts"] == []
+
+
+def test_billing_signatures_and_out_of_order_webhooks_preserve_entitlements(monkeypatch, tmp_path):
+    import hashlib
+    import hmac
+    import json
+
+    webhook_secret = "whsec_test_videomemory"
+    monkeypatch.setenv("RAZORPAY_KEY_ID", "rzp_test_key")
+    monkeypatch.setenv("RAZORPAY_KEY_SECRET", "checkout_secret")
+    monkeypatch.setenv("RAZORPAY_WEBHOOK_SECRET", webhook_secret)
+
+    with TestClient(_app(monkeypatch, tmp_path)) as client:
+        signup = client.post(
+            "/api/auth/signup",
+            json={"name": "Subscriber", "email": "subscriber@example.com", "password": "a-secure-password"},
+        )
+        assert signup.status_code == 201
+        user_id = signup.json()["user"]["user_id"]
+
+        def send_event(event_id: str, status: str, created_at: int, signature_secret: str = webhook_secret):
+            body = json.dumps(
+                {
+                    "event": f"subscription.{status}",
+                    "created_at": created_at,
+                    "payload": {
+                        "subscription": {
+                            "entity": {
+                                "id": "sub_creator",
+                                "status": status,
+                                "current_end": 1_800_000_000,
+                                "notes": {"user_id": user_id, "plan": "creator"},
+                            }
+                        }
+                    },
+                },
+                separators=(",", ":"),
+            ).encode()
+            signature = hmac.new(signature_secret.encode(), body, hashlib.sha256).hexdigest()
+            return client.post(
+                "/api/webhooks/razorpay",
+                content=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Razorpay-Signature": signature,
+                    "X-Razorpay-Event-Id": event_id,
+                },
+            )
+
+        assert send_event("evt_active", "active", 200).status_code == 200
+        active = client.get("/api/account").json()
+        assert active["user"]["plan"] == "creator"
+        assert active["billing"]["subscription"]["status"] == "active"
+
+        # Razorpay documents that webhook delivery can be out of order. An older
+        # terminal event must not revoke a newer active entitlement.
+        assert send_event("evt_stale_cancel", "cancelled", 100).status_code == 200
+        still_active = client.get("/api/account").json()
+        assert still_active["user"]["plan"] == "creator"
+        assert still_active["billing"]["subscription"]["status"] == "active"
+
+        invalid = send_event("evt_bad_signature", "cancelled", 300, "wrong-secret")
+        assert invalid.status_code == 401
+        assert client.get("/api/account").json()["user"]["plan"] == "creator"
+
+        assert send_event("evt_current_cancel", "cancelled", 300).status_code == 200
+        cancelled = client.get("/api/account").json()
+        assert cancelled["user"]["plan"] == "free"
+        assert cancelled["billing"]["subscription"]["status"] == "cancelled"
+
+
+def test_pending_checkout_does_not_remove_an_existing_paid_entitlement(monkeypatch, tmp_path):
+    monkeypatch.setenv("VIDEOMEMORY_DATA_ROOT", str(tmp_path))
+    from videomemory.control import apply_subscription, create_user, get_user
+
+    user = create_user("paid@example.com", "Paid User", "a-secure-password")
+    assert apply_subscription(
+        user["user_id"],
+        provider_subscription_id="sub_active",
+        plan="creator",
+        status="active",
+        provider_event_created_at=200,
+    )
+    assert get_user(user["user_id"])["plan"] == "creator"
+
+    # A replacement checkout is only pending until the provider signs a state
+    # change, so it must not revoke access to the customer's current plan.
+    assert apply_subscription(
+        user["user_id"],
+        provider_subscription_id="sub_pending",
+        plan="studio",
+        status="created",
+    )
+    assert get_user(user["user_id"])["plan"] == "creator"

@@ -159,12 +159,18 @@ def process_webhook(body: bytes, event_id: str | None = None) -> bool:
         return True
     status = entity.get("status") or event.removeprefix("subscription.")
     period_end = entity.get("current_end")
+    created_at = payload.get("created_at")
+    try:
+        provider_event_created_at = int(created_at) if created_at is not None else None
+    except (TypeError, ValueError):
+        provider_event_created_at = None
     apply_subscription(
         user_id,
         provider_subscription_id=entity.get("id", "unknown"),
         plan=plan,
         status=status,
         current_period_end=str(period_end) if period_end else None,
+        provider_event_created_at=provider_event_created_at,
     )
     return True
 

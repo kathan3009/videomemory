@@ -86,6 +86,7 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     plan TEXT NOT NULL,
     status TEXT NOT NULL,
     current_period_end TEXT,
+    provider_event_created_at INTEGER,
     updated_at TEXT NOT NULL
 );
 
@@ -128,6 +129,9 @@ def connect() -> Iterator[sqlite3.Connection]:
     con.execute("PRAGMA busy_timeout=5000")
     try:
         con.executescript(SCHEMA)
+        columns = {row[1] for row in con.execute("PRAGMA table_info(subscriptions)").fetchall()}
+        if "provider_event_created_at" not in columns:
+            con.execute("ALTER TABLE subscriptions ADD COLUMN provider_event_created_at INTEGER")
         yield con
     finally:
         con.close()
@@ -404,24 +408,46 @@ def apply_subscription(
     plan: str,
     status: str,
     current_period_end: str | None = None,
-) -> None:
+    provider_event_created_at: int | None = None,
+) -> bool:
     if plan not in PLAN_LIMITS:
         raise ValueError("unknown plan")
     now = _now()
     with connect() as con:
-        con.execute(
+        changed = con.execute(
             """INSERT INTO subscriptions
-               (user_id,provider,provider_subscription_id,plan,status,current_period_end,updated_at)
-               VALUES (?,?,?,?,?,?,?)
+               (user_id,provider,provider_subscription_id,plan,status,current_period_end,
+                provider_event_created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?)
                ON CONFLICT(user_id) DO UPDATE SET
                  provider_subscription_id=excluded.provider_subscription_id,
                  plan=excluded.plan,status=excluded.status,
-                 current_period_end=excluded.current_period_end,updated_at=excluded.updated_at""",
-            (user_id, "razorpay", provider_subscription_id, plan, status, current_period_end, now),
+                 current_period_end=excluded.current_period_end,
+                 provider_event_created_at=excluded.provider_event_created_at,
+                 updated_at=excluded.updated_at
+               WHERE excluded.provider_event_created_at IS NULL
+                  OR subscriptions.provider_event_created_at IS NULL
+                  OR excluded.provider_event_created_at >= subscriptions.provider_event_created_at""",
+            (
+                user_id,
+                "razorpay",
+                provider_subscription_id,
+                plan,
+                status,
+                current_period_end,
+                provider_event_created_at,
+                now,
+            ),
         )
-        active_plan = plan if status in {"active", "authenticated"} else "free"
-        con.execute("UPDATE users SET plan=?,updated_at=? WHERE user_id=?", (active_plan, now, user_id))
+        if not changed.rowcount:
+            con.commit()
+            return False
+        if status in {"active", "authenticated"}:
+            con.execute("UPDATE users SET plan=?,updated_at=? WHERE user_id=?", (plan, now, user_id))
+        elif status in {"cancelled", "completed", "expired", "halted"}:
+            con.execute("UPDATE users SET plan='free',updated_at=? WHERE user_id=?", (now, user_id))
         con.commit()
+    return True
 
 
 def get_subscription(user_id: str) -> dict[str, Any] | None:
