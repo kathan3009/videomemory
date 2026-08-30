@@ -7,6 +7,9 @@
   --paper: #f4f4ef;
   --muted: #999da3;
   --signal: #8ee7ff;
+  --font-sans: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-mono: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  --font-display: "Iowan Old Style", Baskerville, Georgia, serif;
 }
 
 * { box-sizing: border-box; }

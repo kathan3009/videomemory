@@ -11,12 +11,12 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
       ...options.headers,
     },
   });
-  const payload = await response.json().catch(() => ({}));
+  const payload: Record<string, unknown> = await response.json().catch(() => ({}));
   if (!response.ok) {
     if (response.status === 401 && typeof window !== 'undefined') window.localStorage.removeItem('vm_session');
-    throw new Error(payload.error || 'Request failed');
+    throw new Error(typeof payload.error === 'string' ? payload.error : 'Request failed');
   }
-  if (payload.session_token && typeof window !== 'undefined') {
+  if (typeof payload.session_token === 'string' && typeof window !== 'undefined') {
     window.localStorage.setItem('vm_session', payload.session_token);
   }
   return payload as T;

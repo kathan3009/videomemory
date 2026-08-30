@@ -46,7 +46,7 @@ it'll find the skill in `.claude/skills/` and run setup itself.
 The same engine now includes an authenticated Streamable HTTP MCP endpoint, account dashboard,
 tenant-isolated storage, quotas, Razorpay subscriptions, guarded public-URL ingestion, and a
 living context graph. Deploy the backend with the included hardened `Dockerfile`; deploy
-`src/videomemory/web` with OpenAI Sites. Follow `src/videomemory/DEPLOYMENT.md`, `deploy.env.example`, and
+`src/videomemory/web` with Vercel. Follow `src/videomemory/DEPLOYMENT.md`, `deploy.env.example`, and
 `src/videomemory/web/env.example` for the required environment variables.
 
 Hosted MCP clients connect to `https://<api-host>/mcp` with a dashboard-generated bearer key.

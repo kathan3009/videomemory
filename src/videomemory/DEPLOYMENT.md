@@ -12,15 +12,15 @@ This is the shortest safe path from a clean checkout to a private beta. Budget 2
 
 Railway deprecated new opt-ins to legacy `railway.toml` config-as-code. Use the project UI or run `railway config init`, review with `railway config plan`, and apply with `railway config apply`.
 
-## Web app on OpenAI Sites
+## Web app on Vercel
 
-The Sites source is this directory's `web` folder and already contains `.openai/hosting.json`. Set:
+Import the same GitHub repository in Vercel and set the Root Directory to `src/videomemory/web`. Set:
 
 - `NEXT_PUBLIC_API_URL=https://<api-domain>`
 - `NEXT_PUBLIC_MCP_URL=https://<api-domain>/mcp`
-- `NEXT_PUBLIC_SITE_URL=https://<sites-domain>`
+- `NEXT_PUBLIC_SITE_URL=https://<vercel-domain>`
 
-Deploy a saved production version, then replace the API's `VIDEOMEMORY_WEB_ORIGINS` value with the final Sites origin and restart the API.
+Deploy the production branch, then replace the API's `VIDEOMEMORY_WEB_ORIGINS` value with the final Vercel origin and restart the API. The frontend uses standard Next.js and no OpenAI-hosted or OpenAI Sites infrastructure.
 
 ## Production smoke test
 
