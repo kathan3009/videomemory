@@ -19,7 +19,8 @@ RUN apt-get update \
 WORKDIR /app
 COPY pyproject.toml uv.lock README.md LICENSE ./
 COPY src ./src
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev \
+    && uv cache clean
 
 RUN groupadd --system videomemory \
     && useradd --system --gid videomemory --home-dir /app videomemory \
