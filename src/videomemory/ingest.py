@@ -49,6 +49,25 @@ def _proxy_args() -> list[str]:
     return ["--proxy", proxy] if proxy else []
 
 
+def _network_args() -> list[str]:
+    """Bound request pressure and retry transient HTTP failures politely."""
+    return [
+        "--retries", "3",
+        "--fragment-retries", "3",
+        "--retry-sleep", "http:exp=1:20",
+        "--sleep-requests", "1",
+    ]
+
+
+def _download_error(stderr: bytes) -> RuntimeError:
+    detail = stderr.decode(errors="replace")[:500]
+    if "HTTP Error 429" in detail or "Too Many Requests" in detail:
+        return RuntimeError(
+            "YouTube rate-limited hosted ingestion. Upload the media file or configure a dedicated egress proxy."
+        )
+    return RuntimeError(f"yt-dlp failed: {detail}")
+
+
 # ---------- video ID resolution ----------
 
 _YT_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
@@ -153,6 +172,7 @@ async def _download_audio(url: str, dest_dir: Path) -> tuple[Path, str | None, f
     args = [
         "yt-dlp",
         *_proxy_args(),
+        *_network_args(),
         "-f", "bestaudio/best",
         "-x", "--audio-format", "wav",
         "--no-playlist", "--no-mtime",
@@ -179,7 +199,7 @@ async def _download_audio(url: str, dest_dir: Path) -> tuple[Path, str | None, f
         await proc.wait()
         raise RuntimeError("video download timed out") from exc
     if proc.returncode != 0:
-        raise RuntimeError(f"yt-dlp failed: {err.decode(errors='replace')[:500]}")
+        raise _download_error(err)
     wav = next(iter(dest_dir.glob("source.wav")), None)
     if wav is None:
         # yt-dlp might leave a non-wav file; convert with ffmpeg

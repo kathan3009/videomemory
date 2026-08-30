@@ -8,14 +8,46 @@ between URL validation and yt-dlp/HTTP client connections.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import os
+import ssl
 from collections.abc import AsyncIterator
-from urllib.parse import urlsplit
+from dataclasses import dataclass, field
+from urllib.parse import unquote, urlsplit
 
 from videomemory.url_safety import DEFAULT_PORTS, UnsafeURLError, resolve_public_addresses
 
 MAX_HEADER_BYTES = 64 * 1024
+
+
+@dataclass(frozen=True)
+class UpstreamProxy:
+    scheme: str
+    host: str
+    port: int
+    authorization: str | None = field(repr=False)
+
+
+def _upstream_proxy() -> UpstreamProxy | None:
+    """Parse the optional dedicated egress proxy without retaining its URL."""
+    raw = os.environ.get("VIDEOMEMORY_UPSTREAM_PROXY", "").strip()
+    if not raw:
+        return None
+    parsed = urlsplit(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("VIDEOMEMORY_UPSTREAM_PROXY must be an http(s) proxy URL")
+    if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+        raise ValueError("VIDEOMEMORY_UPSTREAM_PROXY must not contain a path, query, or fragment")
+    try:
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except ValueError as exc:
+        raise ValueError("VIDEOMEMORY_UPSTREAM_PROXY has an invalid port") from exc
+    authorization = None
+    if parsed.username is not None:
+        credentials = f"{unquote(parsed.username)}:{unquote(parsed.password or '')}".encode()
+        authorization = "Basic " + base64.b64encode(credentials).decode("ascii")
+    return UpstreamProxy(parsed.scheme, parsed.hostname, port, authorization)
 
 
 def _allowed_port(port: int) -> bool:
@@ -52,15 +84,81 @@ async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> N
             writer.close()
 
 
-async def _connect_public(host: str, port: int) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+async def _open_public_socket(
+    host: str, port: int, *, tls: bool = False
+) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
     addresses = await resolve_public_addresses(host, port)
     last_error: Exception | None = None
     for address in addresses:
         try:
-            return await asyncio.wait_for(asyncio.open_connection(address, port), timeout=15)
+            return await asyncio.wait_for(
+                asyncio.open_connection(
+                    address,
+                    port,
+                    ssl=ssl.create_default_context() if tls else None,
+                    server_hostname=host if tls else None,
+                ),
+                timeout=15,
+            )
         except (OSError, TimeoutError) as exc:
             last_error = exc
     raise ConnectionError(f"could not connect to public destination: {host}") from last_error
+
+
+def _authority(host: str, port: int) -> str:
+    return f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+
+
+async def _proxy_connect(
+    proxy: UpstreamProxy, destination: str, port: int
+) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+    reader, writer = await _open_public_socket(proxy.host, proxy.port, tls=proxy.scheme == "https")
+    authority = _authority(destination, port)
+    request = [
+        f"CONNECT {authority} HTTP/1.1\r\n",
+        f"Host: {authority}\r\n",
+        "Proxy-Connection: Keep-Alive\r\n",
+    ]
+    if proxy.authorization:
+        request.append(f"Proxy-Authorization: {proxy.authorization}\r\n")
+    request.append("\r\n")
+    writer.write("".join(request).encode("latin-1"))
+    await writer.drain()
+    try:
+        status_line = await asyncio.wait_for(reader.readline(), timeout=15)
+        total = len(status_line)
+        while True:
+            line = await asyncio.wait_for(reader.readline(), timeout=15)
+            total += len(line)
+            if total > MAX_HEADER_BYTES:
+                raise ConnectionError("upstream proxy response headers are too large")
+            if line in {b"\r\n", b"\n", b""}:
+                break
+        parts = status_line.decode("latin-1", errors="replace").split(" ", 2)
+        if len(parts) < 2 or parts[1] != "200":
+            raise ConnectionError("upstream proxy refused the destination")
+        return reader, writer
+    except Exception:
+        writer.close()
+        with contextlib.suppress(Exception):
+            await writer.wait_closed()
+        raise
+
+
+async def _connect_public(host: str, port: int) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+    addresses = await resolve_public_addresses(host, port)
+    proxy = _upstream_proxy()
+    if proxy is None:
+        return await _open_public_socket(host, port)
+    last_error: Exception | None = None
+    # CONNECT to the validated address, not a hostname the upstream proxy can
+    # re-resolve. TLS still carries the original SNI inside the tunnel.
+    for address in addresses:
+        try:
+            return await _proxy_connect(proxy, address, port)
+        except (ConnectionError, OSError, TimeoutError) as exc:
+            last_error = exc
+    raise ConnectionError(f"upstream proxy could not connect to public destination: {host}") from last_error
 
 
 async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -120,6 +218,7 @@ async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) ->
 
 @contextlib.asynccontextmanager
 async def guarded_egress_proxy() -> AsyncIterator[str]:
+    _upstream_proxy()  # Fail at startup instead of after a user queues a job.
     server = await asyncio.start_server(_handle, "127.0.0.1", 0, limit=MAX_HEADER_BYTES)
     socket = server.sockets[0]
     host, port = socket.getsockname()[:2]

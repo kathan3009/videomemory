@@ -7,9 +7,10 @@ This is the shortest safe path from a clean checkout to a private beta. Budget 2
 1. Create a Railway project from the repository root; Railway detects the root `Dockerfile`.
 2. Keep exactly one replica. Attach a persistent volume at `/data/videomemory` and schedule a daily backup.
 3. Set `VIDEOMEMORY_HOSTED=1`, `VIDEOMEMORY_DATA_ROOT=/data/videomemory`, `VIDEOMEMORY_ALLOWED_HOSTS=<api-domain>`, and `VIDEOMEMORY_WEB_ORIGINS=<vercel-origin>`.
-4. Set `VIDEOMEMORY_WEB_URL=<vercel-origin>`, `VIDEOMEMORY_REQUIRE_EMAIL_VERIFICATION=1`, `VIDEOMEMORY_EMAIL_FROM=<verified-sender>`, `RESEND_API_KEY=<secret>`, and `TURNSTILE_SECRET_KEY=<secret>`.
-5. For the credit-backed beta, set `VIDEOMEMORY_WHISPER_MODEL=tiny`, `VIDEOMEMORY_MAX_UPLOAD_BYTES=104857600`, `VIDEOMEMORY_MAX_TENANT_BYTES=367001600`, `VIDEOMEMORY_MAX_GLOBAL_BYTES=471859200`, and `VIDEOMEMORY_MAX_ACTIVE_JOBS=4`.
-6. Enable public networking and configure `/health` as the healthcheck. Confirm it reports `status: ok` with database and storage true.
+4. For reliable YouTube ingestion from a datacenter host, set `VIDEOMEMORY_UPSTREAM_PROXY` to a dedicated HTTP(S) proxy URL. Every destination is validated before the connection is chained, and proxy credentials never appear in yt-dlp arguments or job errors. Upload ingestion remains available without this setting.
+5. Set `VIDEOMEMORY_WEB_URL=<vercel-origin>`, `VIDEOMEMORY_REQUIRE_EMAIL_VERIFICATION=1`, `VIDEOMEMORY_EMAIL_FROM=<verified-sender>`, `RESEND_API_KEY=<secret>`, and `TURNSTILE_SECRET_KEY=<secret>`.
+6. For the credit-backed beta, set `VIDEOMEMORY_WHISPER_MODEL=tiny`, `VIDEOMEMORY_MAX_UPLOAD_BYTES=104857600`, `VIDEOMEMORY_MAX_TENANT_BYTES=367001600`, `VIDEOMEMORY_MAX_GLOBAL_BYTES=471859200`, and `VIDEOMEMORY_MAX_ACTIVE_JOBS=4`.
+7. Enable public networking and configure `/health` as the healthcheck. Confirm it reports `status: ok` with database and storage true.
 
 Railway deprecated new opt-ins to legacy `railway.toml` config-as-code. Use the project UI or run `railway config init`, review with `railway config plan`, and apply with `railway config apply`.
 
