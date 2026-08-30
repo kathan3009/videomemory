@@ -24,7 +24,7 @@ RUN uv sync --frozen --no-dev
 RUN groupadd --system videomemory \
     && useradd --system --gid videomemory --home-dir /app videomemory \
     && mkdir -p /data/videomemory /models \
-    && chown -R videomemory:videomemory /app /data /models
+    && chown -R videomemory:videomemory /data /models
 USER videomemory
 EXPOSE 8080
 
