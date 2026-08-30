@@ -3,9 +3,9 @@ import Link from 'next/link';
 export function Mark({ compact = false }: { compact?: boolean }) {
   return (
     <span className={compact ? 'mark mark-compact' : 'mark'} aria-hidden="true">
-      <span className="mark-ring mark-ring-a" />
-      <span className="mark-ring mark-ring-b" />
-      <span className="mark-core" />
+      <span className="mark-frame mark-frame-back" />
+      <span className="mark-frame mark-frame-mid" />
+      <span className="mark-frame mark-frame-front"><i /></span>
     </span>
   );
 }
