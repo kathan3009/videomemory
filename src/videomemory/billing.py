@@ -16,6 +16,7 @@ from videomemory.control import (
     get_subscription,
     remember_webhook,
     set_setting,
+    webhook_seen,
 )
 
 RAZORPAY_API = "https://api.razorpay.com/v1"
@@ -30,10 +31,15 @@ class BillingUnavailable(RuntimeError):
 
 
 def public_billing_config() -> dict[str, Any]:
+    required = (
+        os.environ.get("RAZORPAY_KEY_ID"),
+        os.environ.get("RAZORPAY_KEY_SECRET"),
+        os.environ.get("RAZORPAY_WEBHOOK_SECRET"),
+    )
     return {
         "provider": "razorpay",
         "key_id": os.environ.get("RAZORPAY_KEY_ID", ""),
-        "enabled": bool(os.environ.get("RAZORPAY_KEY_ID") and os.environ.get("RAZORPAY_KEY_SECRET")),
+        "enabled": all(required),
         "plans": PAID_PLANS,
     }
 
@@ -146,16 +152,17 @@ def verify_webhook(body: bytes, signature: str | None) -> bool:
 
 
 def process_webhook(body: bytes, event_id: str | None = None) -> bool:
-    payload = json.loads(body)
     fingerprint = event_id or hashlib.sha256(body).hexdigest()
-    if not remember_webhook(fingerprint):
+    if webhook_seen(fingerprint):
         return False
+    payload = json.loads(body)
     event = payload.get("event", "")
     entity = payload.get("payload", {}).get("subscription", {}).get("entity", {})
     notes = entity.get("notes") or {}
     user_id = notes.get("user_id")
     plan = notes.get("plan")
     if not user_id or plan not in PAID_PLANS:
+        remember_webhook(fingerprint)
         return True
     status = entity.get("status") or event.removeprefix("subscription.")
     period_end = entity.get("current_end")
@@ -172,6 +179,7 @@ def process_webhook(body: bytes, event_id: str | None = None) -> bool:
         current_period_end=str(period_end) if period_end else None,
         provider_event_created_at=provider_event_created_at,
     )
+    remember_webhook(fingerprint)
     return True
 
 

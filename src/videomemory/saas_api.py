@@ -19,6 +19,7 @@ from typing import Any
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
+from starlette.background import BackgroundTask
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
@@ -28,6 +29,14 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from videomemory.artifact_memory import artifact_memory as recall_artifacts
 from videomemory.artifact_memory import remember_artifact
+from videomemory.auth_services import (
+    CaptchaUnavailable,
+    EmailUnavailable,
+    email_verification_required,
+    send_password_reset_email,
+    send_verification_email,
+    verify_captcha,
+)
 from videomemory.billing import (
     BillingUnavailable,
     cancel_subscription,
@@ -53,6 +62,7 @@ from videomemory.control import (
     active_job_count,
     authenticate_user,
     create_api_key,
+    create_auth_token,
     create_session,
     create_user,
     find_active_job,
@@ -61,11 +71,14 @@ from videomemory.control import (
     list_api_keys,
     list_jobs,
     record_usage,
+    reset_password,
     revoke_api_key,
     revoke_session,
     usage_summary,
     user_for_api_key,
+    user_for_email,
     user_for_session,
+    verify_email,
 )
 from videomemory.control import (
     connect as control_connect,
@@ -211,7 +224,7 @@ class RateLimitMiddleware:
         forwarded = (request_headers.get(b"cf-connecting-ip") or request_headers.get(b"x-forwarded-for")) if trust_proxy else None
         key = forwarded.decode(errors="ignore") if forwarded else (client[0] if client else "unknown")
         key = key.split(",", 1)[0].strip()
-        request_limit = 10 if str(scope.get("path", "")) in {"/api/auth/login", "/api/auth/signup"} else self.limit
+        request_limit = 10 if str(scope.get("path", "")).startswith("/api/auth/") else self.limit
         now = time.monotonic()
         if len(self.hits) > 10_000:
             self.hits = defaultdict(
@@ -296,7 +309,17 @@ async def signup(request: Request) -> JSONResponse:
     try:
         _require_browser_origin(request)
         data = await _json(request)
+        await verify_captcha(
+            str(data.get("captcha_token", "")), request.client.host if request.client else None, "signup"
+        )
         user = create_user(str(data.get("email", "")), str(data.get("name", "")), str(data.get("password", "")))
+        if email_verification_required():
+            token = create_auth_token(user["user_id"], "verify_email", 24 * 60)
+            await send_verification_email(user["email"], token)
+            return JSONResponse(
+                {"user": user, "verification_required": True, "message": "Check your email to activate your account."},
+                status_code=202,
+            )
         api_key, key_info = create_api_key(user["user_id"], "Default MCP key")
         session = create_session(user["user_id"], request.headers.get("user-agent", ""))
         response = JSONResponse(
@@ -306,6 +329,8 @@ async def signup(request: Request) -> JSONResponse:
         return response
     except ValueError as exc:
         return _error(str(exc))
+    except (CaptchaUnavailable, EmailUnavailable) as exc:
+        return _error(str(exc), 503)
     except PermissionError as exc:
         return _error(str(exc), 403)
 
@@ -314,15 +339,82 @@ async def login(request: Request) -> JSONResponse:
     try:
         _require_browser_origin(request)
         data = await _json(request)
+        await verify_captcha(
+            str(data.get("captcha_token", "")), request.client.host if request.client else None, "login"
+        )
         user = authenticate_user(str(data.get("email", "")), str(data.get("password", "")))
         if not user:
             return _error("email or password is incorrect", 401)
+        if email_verification_required() and not user.get("email_verified"):
+            token = create_auth_token(user["user_id"], "verify_email", 24 * 60)
+            await send_verification_email(user["email"], token)
+            return _error("verify your email before signing in; we sent a new link", 403)
         session = create_session(user["user_id"], request.headers.get("user-agent", ""))
         response = JSONResponse({"user": user, "session_token": session})
         _set_session(response, session)
         return response
     except (ValueError, PermissionError) as exc:
         return _error(str(exc), 400 if isinstance(exc, ValueError) else 403)
+    except (CaptchaUnavailable, EmailUnavailable) as exc:
+        return _error(str(exc), 503)
+
+
+async def confirm_email(request: Request) -> JSONResponse:
+    try:
+        _require_browser_origin(request)
+        data = await _json(request)
+        user = verify_email(str(data.get("token", "")))
+        api_key, key_info = create_api_key(user["user_id"], "Default MCP key")
+        session = create_session(user["user_id"], request.headers.get("user-agent", ""))
+        response = JSONResponse({"user": user, "api_key": api_key, "key": key_info, "session_token": session})
+        _set_session(response, session)
+        return response
+    except PermissionError as exc:
+        return _error(str(exc), 403)
+    except ValueError as exc:
+        return _error(str(exc))
+
+
+async def forgot_password(request: Request) -> JSONResponse:
+    try:
+        _require_browser_origin(request)
+        data = await _json(request)
+        await verify_captcha(
+            str(data.get("captcha_token", "")), request.client.host if request.client else None, "recover"
+        )
+        user = user_for_email(str(data.get("email", "")))
+        background = None
+        if user:
+            token = create_auth_token(user["user_id"], "reset_password", 30)
+            background = BackgroundTask(_deliver_password_reset, user["email"], token)
+        return JSONResponse(
+            {"ok": True, "message": "If that account exists, a reset link is on its way."},
+            status_code=202,
+            background=background,
+        )
+    except (ValueError, PermissionError) as exc:
+        return _error(str(exc), 400 if isinstance(exc, ValueError) else 403)
+    except CaptchaUnavailable as exc:
+        return _error(str(exc), 503)
+
+
+async def _deliver_password_reset(email: str, token: str) -> None:
+    try:
+        await send_password_reset_email(email, token)
+    except EmailUnavailable:
+        return
+
+
+async def complete_password_reset(request: Request) -> JSONResponse:
+    try:
+        _require_browser_origin(request)
+        data = await _json(request)
+        reset_password(str(data.get("token", "")), str(data.get("password", "")))
+        return JSONResponse({"ok": True, "message": "Password updated. Sign in with your new password."})
+    except PermissionError as exc:
+        return _error(str(exc), 403)
+    except ValueError as exc:
+        return _error(str(exc))
 
 
 async def logout(request: Request) -> JSONResponse:
@@ -755,6 +847,9 @@ routes = [
     Route("/health", health, methods=["GET"]),
     Route("/api/auth/signup", signup, methods=["POST"]),
     Route("/api/auth/login", login, methods=["POST"]),
+    Route("/api/auth/verify-email", confirm_email, methods=["POST"]),
+    Route("/api/auth/forgot-password", forgot_password, methods=["POST"]),
+    Route("/api/auth/reset-password", complete_password_reset, methods=["POST"]),
     Route("/api/auth/logout", logout, methods=["POST"]),
     Route("/api/account", account, methods=["GET"]),
     Route("/api/keys", create_key, methods=["POST"]),

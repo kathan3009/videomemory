@@ -30,9 +30,19 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash TEXT NOT NULL,
     plan TEXT NOT NULL DEFAULT 'free',
     status TEXT NOT NULL DEFAULT 'active',
+    email_verified_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS auth_tokens (
+    token_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    purpose TEXT NOT NULL CHECK(purpose IN ('verify_email', 'reset_password')),
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    used_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_auth_tokens_user_purpose ON auth_tokens(user_id, purpose);
 CREATE TABLE IF NOT EXISTS sessions (
     session_hash TEXT PRIMARY KEY,
     user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
@@ -132,6 +142,10 @@ def connect() -> Iterator[sqlite3.Connection]:
         columns = {row[1] for row in con.execute("PRAGMA table_info(subscriptions)").fetchall()}
         if "provider_event_created_at" not in columns:
             con.execute("ALTER TABLE subscriptions ADD COLUMN provider_event_created_at INTEGER")
+        user_columns = {row[1] for row in con.execute("PRAGMA table_info(users)").fetchall()}
+        if "email_verified_at" not in user_columns:
+            con.execute("ALTER TABLE users ADD COLUMN email_verified_at TEXT")
+            con.execute("UPDATE users SET email_verified_at=created_at WHERE email_verified_at IS NULL")
         yield con
     finally:
         con.close()
@@ -170,6 +184,7 @@ def _public_user(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
         "plan": row["plan"],
         "status": row["status"],
         "created_at": row["created_at"],
+        "email_verified": bool(row["email_verified_at"]),
     }
 
 
@@ -202,6 +217,78 @@ def authenticate_user(email: str, password: str) -> dict[str, Any] | None:
     if row is None or row["status"] != "active" or not _password_matches(password, row["password_hash"]):
         return None
     return _public_user(row)
+
+
+def user_for_email(email: str) -> dict[str, Any] | None:
+    with connect() as con:
+        row = con.execute("SELECT * FROM users WHERE email=? COLLATE NOCASE", (email.strip(),)).fetchone()
+    return _public_user(row) if row else None
+
+
+def create_auth_token(user_id: str, purpose: str, minutes: int) -> str:
+    if purpose not in {"verify_email", "reset_password"}:
+        raise ValueError("invalid token purpose")
+    token = secrets.token_urlsafe(48)
+    now = datetime.now(UTC)
+    expires = now + timedelta(minutes=minutes)
+    with connect() as con:
+        con.execute(
+            "DELETE FROM auth_tokens WHERE user_id=? AND purpose=? AND used_at IS NULL",
+            (user_id, purpose),
+        )
+        con.execute(
+            "INSERT INTO auth_tokens (token_hash,user_id,purpose,expires_at,created_at) VALUES (?,?,?,?,?)",
+            (_hash_secret(token), user_id, purpose, expires.isoformat(), now.isoformat()),
+        )
+        con.commit()
+    return token
+
+
+def verify_email(token: str) -> dict[str, Any]:
+    now = _now()
+    with connect() as con:
+        con.execute("BEGIN IMMEDIATE")
+        row = con.execute(
+            """SELECT u.* FROM auth_tokens t JOIN users u ON u.user_id=t.user_id
+               WHERE t.token_hash=? AND t.purpose='verify_email' AND t.used_at IS NULL AND t.expires_at>?""",
+            (_hash_secret(token), now),
+        ).fetchone()
+        if row is None:
+            raise ValueError("verification link is invalid or expired")
+        con.execute("UPDATE auth_tokens SET used_at=? WHERE token_hash=?", (now, _hash_secret(token)))
+        con.execute("UPDATE users SET email_verified_at=?,updated_at=? WHERE user_id=?", (now, now, row["user_id"]))
+        con.commit()
+        updated = con.execute("SELECT * FROM users WHERE user_id=?", (row["user_id"],)).fetchone()
+    assert updated is not None
+    return _public_user(updated)
+
+
+def reset_password(token: str, password: str) -> dict[str, Any]:
+    password_hash = _password_hash(password)
+    now = _now()
+    with connect() as con:
+        con.execute("BEGIN IMMEDIATE")
+        row = con.execute(
+            """SELECT u.* FROM auth_tokens t JOIN users u ON u.user_id=t.user_id
+               WHERE t.token_hash=? AND t.purpose='reset_password' AND t.used_at IS NULL AND t.expires_at>?""",
+            (_hash_secret(token), now),
+        ).fetchone()
+        if row is None:
+            raise ValueError("password reset link is invalid or expired")
+        con.execute("UPDATE auth_tokens SET used_at=? WHERE token_hash=?", (now, _hash_secret(token)))
+        con.execute(
+            "UPDATE users SET password_hash=?,updated_at=? WHERE user_id=?",
+            (password_hash, now, row["user_id"]),
+        )
+        con.execute("DELETE FROM sessions WHERE user_id=?", (row["user_id"],))
+        con.execute(
+            "UPDATE api_keys SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL",
+            (now, row["user_id"]),
+        )
+        con.commit()
+        updated = con.execute("SELECT * FROM users WHERE user_id=?", (row["user_id"],)).fetchone()
+    assert updated is not None
+    return _public_user(updated)
 
 
 def get_user(user_id: str) -> dict[str, Any] | None:
@@ -469,6 +556,13 @@ def remember_webhook(provider_event_id: str) -> bool:
         return False
 
 
+def webhook_seen(provider_event_id: str) -> bool:
+    with connect() as con:
+        return con.execute(
+            "SELECT 1 FROM webhook_events WHERE provider_event_id=?", (provider_event_id,)
+        ).fetchone() is not None
+
+
 def get_setting(key: str) -> str | None:
     with connect() as con:
         row = con.execute("SELECT value FROM app_settings WHERE key=?", (key,)).fetchone()
@@ -492,6 +586,7 @@ __all__ = [
     "authenticate_user",
     "connect",
     "create_api_key",
+    "create_auth_token",
     "create_job",
     "create_session",
     "create_user",
@@ -504,6 +599,7 @@ __all__ = [
     "list_jobs",
     "pending_jobs",
     "record_usage",
+    "reset_password",
     "remember_webhook",
     "revoke_api_key",
     "revoke_session",
@@ -511,5 +607,8 @@ __all__ = [
     "update_job",
     "usage_summary",
     "user_for_api_key",
+    "user_for_email",
     "user_for_session",
+    "verify_email",
+    "webhook_seen",
 ]

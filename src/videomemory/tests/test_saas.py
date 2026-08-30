@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib
 from pathlib import Path
 
@@ -30,6 +31,201 @@ def test_signup_session_and_api_key(monkeypatch, tmp_path):
         assert account.status_code == 200
         assert account.json()["user"]["email"] == "kathan@example.com"
         assert account.json()["usage"]["plan"] == "free"
+
+
+def test_hosted_email_verification_and_password_reset_are_one_time(monkeypatch, tmp_path):
+    monkeypatch.setenv("VIDEOMEMORY_DATA_ROOT", str(tmp_path))
+    monkeypatch.setenv("VIDEOMEMORY_ALLOWED_HOSTS", "testserver")
+    monkeypatch.setenv("VIDEOMEMORY_WEB_ORIGINS", "https://videomemory.example")
+    monkeypatch.setenv("VIDEOMEMORY_HOSTED", "1")
+    monkeypatch.setenv("VIDEOMEMORY_REQUIRE_EMAIL_VERIFICATION", "1")
+    import videomemory.saas_api as saas_api
+
+    saas_api = importlib.reload(saas_api)
+    captured: dict[str, str] = {}
+
+    async def captcha(token: str, remote_ip: str | None = None, expected_action: str | None = None):
+        assert token == "captcha-ok"
+        assert expected_action in {"signup", "login", "recover"}
+
+    async def verification_email(recipient: str, token: str):
+        captured["verify_recipient"] = recipient
+        captured["verify_token"] = token
+
+    async def reset_email(recipient: str, token: str):
+        captured["reset_recipient"] = recipient
+        captured["reset_token"] = token
+
+    monkeypatch.setattr(saas_api, "verify_captcha", captcha)
+    monkeypatch.setattr(saas_api, "send_verification_email", verification_email)
+    monkeypatch.setattr(saas_api, "send_password_reset_email", reset_email)
+    headers = {"Origin": "https://videomemory.example"}
+
+    with TestClient(saas_api.app) as client:
+        signup = client.post(
+            "/api/auth/signup",
+            headers=headers,
+            json={
+                "name": "Verified User",
+                "email": "verified@example.com",
+                "password": "a-secure-password",
+                "captcha_token": "captcha-ok",
+            },
+        )
+        assert signup.status_code == 202
+        assert signup.json()["verification_required"] is True
+        assert "api_key" not in signup.json()
+        assert captured["verify_recipient"] == "verified@example.com"
+
+        verified = client.post(
+            "/api/auth/verify-email", headers=headers, json={"token": captured["verify_token"]}
+        )
+        assert verified.status_code == 200
+        assert verified.json()["user"]["email_verified"] is True
+        assert verified.json()["api_key"].startswith("vm_live_")
+        old_session = verified.json()["session_token"]
+        old_api_key = verified.json()["api_key"]
+
+        replay = client.post(
+            "/api/auth/verify-email", headers=headers, json={"token": captured["verify_token"]}
+        )
+        assert replay.status_code == 400
+
+        forgot = client.post(
+            "/api/auth/forgot-password",
+            headers=headers,
+            json={"email": "verified@example.com", "captcha_token": "captcha-ok"},
+        )
+        assert forgot.status_code == 202
+        assert captured["reset_recipient"] == "verified@example.com"
+
+        reset = client.post(
+            "/api/auth/reset-password",
+            headers=headers,
+            json={"token": captured["reset_token"], "password": "a-new-secure-password"},
+        )
+        assert reset.status_code == 200
+        assert client.get(
+            "/api/account", headers={"X-Videomemory-Session": old_session}
+        ).status_code == 401
+        assert client.post(
+            "/mcp",
+            headers={"Authorization": f"Bearer {old_api_key}"},
+            json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+        ).status_code == 401
+        assert client.post(
+            "/api/auth/reset-password",
+            headers=headers,
+            json={"token": captured["reset_token"], "password": "another-secure-password"},
+        ).status_code == 400
+
+        login = client.post(
+            "/api/auth/login",
+            headers=headers,
+            json={
+                "email": "verified@example.com",
+                "password": "a-new-secure-password",
+                "captcha_token": "captcha-ok",
+            },
+        )
+        assert login.status_code == 200
+
+def test_turnstile_is_bound_to_auth_action_and_host(monkeypatch):
+    monkeypatch.setenv("VIDEOMEMORY_HOSTED", "1")
+    monkeypatch.setenv("VIDEOMEMORY_WEB_URL", "https://videomemory.example")
+    monkeypatch.setenv("TURNSTILE_SECRET_KEY", "test-secret")
+    import videomemory.auth_services as auth_services
+
+    auth_services = importlib.reload(auth_services)
+
+    class Response:
+        status_code = 200
+
+        def json(self):
+            return FakeClient.result
+
+    class FakeClient:
+        result = {"success": True, "action": "login", "hostname": "videomemory.example"}
+
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, *args, **kwargs):
+            return Response()
+
+    monkeypatch.setattr(auth_services.httpx, "AsyncClient", FakeClient)
+    asyncio.run(auth_services.verify_captcha("ok", expected_action="login"))
+
+    FakeClient.result = {"success": True, "action": "signup", "hostname": "videomemory.example"}
+    try:
+        asyncio.run(auth_services.verify_captcha("ok", expected_action="login"))
+    except ValueError as exc:
+        assert "CAPTCHA verification failed" in str(exc)
+    else:
+        raise AssertionError("a token for another auth action must be rejected")
+
+    FakeClient.result = {"success": True, "action": "login", "hostname": "attacker.example"}
+    try:
+        asyncio.run(auth_services.verify_captcha("ok", expected_action="login"))
+    except ValueError as exc:
+        assert "CAPTCHA verification failed" in str(exc)
+    else:
+        raise AssertionError("a token for another hostname must be rejected")
+
+
+def test_password_recovery_hides_account_and_email_provider_state(monkeypatch, tmp_path):
+    monkeypatch.setenv("VIDEOMEMORY_DATA_ROOT", str(tmp_path))
+    monkeypatch.setenv("VIDEOMEMORY_ALLOWED_HOSTS", "testserver")
+    monkeypatch.setenv("VIDEOMEMORY_WEB_ORIGINS", "https://videomemory.example")
+    monkeypatch.setenv("VIDEOMEMORY_HOSTED", "1")
+    monkeypatch.setenv("VIDEOMEMORY_REQUIRE_EMAIL_VERIFICATION", "1")
+    import videomemory.saas_api as saas_api
+
+    saas_api = importlib.reload(saas_api)
+
+    async def captcha(*args, **kwargs):
+        return None
+
+    async def verification_email(*args, **kwargs):
+        return None
+
+    async def failed_reset_email(*args, **kwargs):
+        raise saas_api.EmailUnavailable("provider unavailable")
+
+    monkeypatch.setattr(saas_api, "verify_captcha", captcha)
+    monkeypatch.setattr(saas_api, "send_verification_email", verification_email)
+    monkeypatch.setattr(saas_api, "send_password_reset_email", failed_reset_email)
+    headers = {"Origin": "https://videomemory.example"}
+
+    with TestClient(saas_api.app) as client:
+        assert client.post(
+            "/api/auth/signup",
+            headers=headers,
+            json={
+                "name": "Recovery User",
+                "email": "registered@example.com",
+                "password": "a-secure-password",
+                "captcha_token": "captcha-ok",
+            },
+        ).status_code == 202
+        registered = client.post(
+            "/api/auth/forgot-password",
+            headers=headers,
+            json={"email": "registered@example.com", "captcha_token": "captcha-ok"},
+        )
+        absent = client.post(
+            "/api/auth/forgot-password",
+            headers=headers,
+            json={"email": "absent@example.com", "captcha_token": "captcha-ok"},
+        )
+        assert registered.status_code == absent.status_code == 202
+        assert registered.json() == absent.json()
 
 
 def test_tenant_libraries_are_isolated(monkeypatch, tmp_path):

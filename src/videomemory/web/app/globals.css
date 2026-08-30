@@ -178,6 +178,10 @@ footer a:hover { color: #c7cac8; }
 .auth-submit:disabled { opacity: .55; cursor: wait; }
 .auth-switch { color: #64696c; font-size: 11px; text-align: center; }
 .auth-switch a { color: #c4c7c5; }
+.auth-forgot { margin-top: 0; }
+.captcha-wrap { min-height: 65px; margin: 0 0 14px; display: flex; align-items: center; }
+.captcha-wrap > div { width: 100%; }
+.key-reveal p strong { color: #d9d7d0; font-weight: 600; }
 .form-error { margin: -2px 0 15px; padding: 11px 12px; border: 1px solid rgba(255,126,126,.28); color: #e0a1a1; background: rgba(255,80,80,.045); border-radius: 3px; font-size: 11px; }
 .auth-art { min-height: 650px; position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; perspective: 900px; }
 .auth-orbit { position: absolute; width: min(38vw, 510px); height: min(38vw, 510px); border: 1px solid rgba(255,255,255,.16); border-radius: 50%; }
