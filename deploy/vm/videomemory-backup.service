@@ -1,0 +1,31 @@
+[Unit]
+Description=Videomemory encrypted off-host backup
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=/opt/videomemory/backup.env
+Environment=VIDEOMEMORY_HOST_DATA=/opt/videomemory/data
+Environment=VIDEOMEMORY_BACKUP_WORK=/opt/videomemory/backup-work
+Environment=RESTIC_CACHE_DIR=/opt/videomemory/backup-cache
+ExecStart=/usr/bin/python3 /opt/videomemory/app/deploy/vm/backup.py
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+CPUQuota=35%
+MemoryMax=768M
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/opt/videomemory
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

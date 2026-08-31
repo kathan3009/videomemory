@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Videomemory backup every day
+
+[Timer]
+OnCalendar=*-*-* 02:17:00 UTC
+RandomizedDelaySec=15m
+Persistent=true
+Unit=videomemory-backup.service
+
+[Install]
+WantedBy=timers.target

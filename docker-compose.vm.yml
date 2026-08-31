@@ -11,9 +11,11 @@ services:
       VIDEOMEMORY_DATA_ROOT: /data/videomemory
       VIDEOMEMORY_JOB_CONCURRENCY: "1"
       VIDEOMEMORY_YTDLP_POT_URL: "http://pot-provider:4416"
+      VIDEOMEMORY_YTDLP_COOKIES_FILE: "/run/videomemory-ytdlp/cookies.txt"
       OMP_NUM_THREADS: "${VIDEOMEMORY_OMP_THREADS:-2}"
     volumes:
       - "${VIDEOMEMORY_HOST_DATA:-/opt/videomemory/data}:/data/videomemory"
+      - "${VIDEOMEMORY_YTDLP_CONFIG_DIR:-/opt/videomemory/ytdlp}:/run/videomemory-ytdlp:ro"
     expose:
       - "8080"
     cpus: "${VIDEOMEMORY_CONTAINER_CPUS:-2.0}"

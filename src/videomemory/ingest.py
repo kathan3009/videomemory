@@ -75,11 +75,27 @@ def _youtube_pot_args(url: str) -> list[str]:
     ]
 
 
+def _youtube_cookie_args(url: str) -> list[str]:
+    """Attach an operator-managed cookie jar without exposing it to tenants."""
+    cookie_file = os.environ.get("VIDEOMEMORY_YTDLP_COOKIES_FILE", "").strip()
+    if not cookie_file or not _youtube_id(url):
+        return []
+    path = Path(cookie_file).expanduser()
+    if not path.is_file():
+        return []
+    return ["--cookies", str(path)]
+
+
 def _download_error(stderr: bytes) -> RuntimeError:
     stderr_text = stderr.decode(errors="replace")
     if "HTTP Error 429" in stderr_text or "Too Many Requests" in stderr_text:
         return RuntimeError(
             "YouTube rate-limited hosted ingestion. Upload the media file or configure a dedicated egress proxy."
+        )
+    if "Sign in to confirm you’re not a bot" in stderr_text or "Sign in to confirm you're not a bot" in stderr_text:
+        return RuntimeError(
+            "YouTube requested automated-traffic verification. Upload the media file or configure the "
+            "operator YouTube cookie jar/dedicated egress proxy."
         )
     # Warnings can be long enough to hide the final actionable yt-dlp error.
     detail = stderr_text[-500:]
@@ -192,6 +208,7 @@ async def _download_audio(url: str, dest_dir: Path) -> tuple[Path, str | None, f
         *_proxy_args(),
         *_network_args(),
         *_youtube_pot_args(url),
+        *_youtube_cookie_args(url),
         "-f", "bestaudio/best",
         "-x", "--audio-format", "wav",
         "--no-playlist", "--no-mtime",

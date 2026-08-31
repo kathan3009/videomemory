@@ -49,7 +49,10 @@ VIDEOMEMORY_CONTAINER_CPUS=2.0
 VIDEOMEMORY_CONTAINER_MEMORY=7g
 VIDEOMEMORY_OMP_THREADS=2
 VIDEOMEMORY_PREFER_IPV6=0
+VIDEOMEMORY_YTDLP_CONFIG_DIR=/opt/videomemory/ytdlp
 ```
+
+YouTube can require account verification for datacenter IPs even when PO tokens are present. If that happens, place a Netscape-format `cookies.txt` from a dedicated low-privilege YouTube account at `/opt/videomemory/ytdlp/cookies.txt`, owned by root with mode `600`, then restart the API. Do not use a founder's primary Google account; YouTube warns that automated use can suspend the account. A dedicated egress proxy remains supported through `VIDEOMEMORY_UPSTREAM_PROXY`.
 
 Point the Cloudflare `api.videomemory.kathandesai.com` A/AAAA records at the VM only after both checks succeed on the VM:
 
@@ -71,4 +74,21 @@ The API container port and the YouTube proof-of-origin token provider are delibe
 5. Lower DNS TTL, switch the API A/AAAA records, and watch logs for one hour.
 6. Keep Railway intact for at least 24 hours; remove it only after the VM backup has been restored successfully once.
 
-Back up `/opt/videomemory/data` daily. A provider snapshot is useful, but retain an encrypted copy outside the VM as well.
+## Encrypted off-host backups
+
+`deploy/vm/backup.py` copies media into a private staging tree, uses SQLite's online backup API for every database, verifies each snapshot with `PRAGMA integrity_check`, and sends the result to an encrypted restic repository. The timer keeps 7 daily, 4 weekly, and 6 monthly snapshots.
+
+Install `restic`, place its repository credentials in root-only `/opt/videomemory/backup.env`, initialize the repository once, and enable the timer:
+
+```bash
+sudo apt-get update && sudo apt-get install -y restic
+sudo chmod 600 /opt/videomemory/backup.env
+sudo cp deploy/vm/videomemory-backup.service /etc/systemd/system/
+sudo cp deploy/vm/videomemory-backup.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now videomemory-backup.timer
+sudo systemctl start videomemory-backup.service
+sudo journalctl -u videomemory-backup.service --no-pager
+```
+
+Keep a second, offline copy of `RESTIC_PASSWORD`; without it, the remote snapshots cannot be restored.

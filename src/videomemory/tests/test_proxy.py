@@ -5,7 +5,12 @@ import asyncio
 import pytest
 
 from videomemory import outbound_proxy
-from videomemory.ingest import _download_error, _network_args, _youtube_pot_args
+from videomemory.ingest import (
+    _download_error,
+    _network_args,
+    _youtube_cookie_args,
+    _youtube_pot_args,
+)
 from videomemory.outbound_proxy import _authority, _ordered_addresses, _upstream_proxy
 
 
@@ -119,3 +124,20 @@ def test_youtube_pot_provider_rejects_unsafe_operator_url(monkeypatch):
 
     with pytest.raises(RuntimeError, match="must not include credentials"):
         _youtube_pot_args("https://youtu.be/BM70fDqUo3c")
+
+
+def test_youtube_cookie_jar_is_operator_scoped(monkeypatch, tmp_path):
+    cookie_file = tmp_path / "cookies.txt"
+    cookie_file.write_text("# Netscape HTTP Cookie File\n")
+    monkeypatch.setenv("VIDEOMEMORY_YTDLP_COOKIES_FILE", str(cookie_file))
+
+    assert _youtube_cookie_args("https://youtu.be/BM70fDqUo3c") == [
+        "--cookies", str(cookie_file)
+    ]
+    assert _youtube_cookie_args("https://example.com/video.mp4") == []
+
+
+def test_bot_challenge_has_actionable_error():
+    error = _download_error(b"ERROR: Sign in to confirm you're not a bot")
+
+    assert "operator YouTube cookie jar" in str(error)
